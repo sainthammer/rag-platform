@@ -24,6 +24,9 @@ tests/
 
 Подробная документация по модулю LLM: [`llm/README.md`](llm/README.md)
 
+Документация по оценке (RAGAS): [`evaluation/README.md`](evaluation/README.md)
+
+Документация по трейсингу (OpenTelemetry): [`observability/README.md`](observability/README.md)
 Подробная документация по модулю VECTOR STORE: [`vector_store/README.md`](vectore_store/README.md)
 
 ---
@@ -60,6 +63,34 @@ cp .env.example .env
 
 Все настройки задаются через переменные окружения или файл `.env`.
 Полный список параметров см. в `.env.example` и `config.py`.
+
+### Evaluation (RAGAS)
+
+Модуль `evaluation/` содержит фиксированный набор тесткейсов (30 positive / 10 negative / 5 multi-hop)
+и утилиты для оценки качества через RAGAS.
+
+Путь к базе знаний для `source_doc` задаётся переменной окружения:
+
+```bash
+KNOWLEDGE_BASE_PATH=/path/to/knowledge-base
+```
+
+Зависимости для RAGAS находятся в optional группе `eval`:
+
+```bash
+pip install -e ".[eval]"
+```
+
+### Observability / Tracing (OpenTelemetry)
+
+Для трейсинга используется `observability/tracing.py`.
+Экспорт трейсинга выполняется через OTLP endpoint:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+Этот endpoint должен указывать на Jaeger Collector / OpenTelemetry Collector.
 
 ### Выбор LLM-провайдера
 
