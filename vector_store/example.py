@@ -1,3 +1,7 @@
+"""
+Пример базового взаимодействия с коллекциями + можно использовать как тест(просто запустить этот файл)
+"""
+
 from vector_store.adapters import ChromaDB, QdrantDB
 
 EMBEDDINGS = [
