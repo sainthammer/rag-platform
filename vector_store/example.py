@@ -1,4 +1,4 @@
-from .adapters import ChromaDB, QdrantDB
+from vector_store.adapters import ChromaDB, QdrantDB
 
 EMBEDDINGS = [
     [0.1, 0.2, 0.3, 0.4],
