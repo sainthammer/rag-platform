@@ -1,3 +1,7 @@
+"""
+Реализации интерфейсов для базового взаимодействия с векторными БД.
+"""
+
 from vector_store.store_dataclasses import SearchResult
 from vector_store.utils import to_uuid
 
@@ -7,6 +11,16 @@ from .ports import VectorDB
 
 
 class ChromaDB(VectorDB):
+    """
+    Реализация для ChromaDB
+
+    args:
+        collection: название создоваемой/существующей коллекции
+        persists_directory: директория, в котрой будет хранится файл БД
+        host: имя хоста, где запущена БД при сетевом деплое
+        port: порт, по которому доступна БД при сетевом деплое
+    """
+
     def __init__(
         self,
         collection: str,
@@ -24,6 +38,17 @@ class ChromaDB(VectorDB):
         self.collection = self.client.get_or_create_collection(collection)
 
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
+        """
+        Добавление записей в коллекцию.
+        Все передаваемые списки должны быть одинаковой длинны, иначе обрежет на самом коротком
+
+        args:
+            ids: список идентификаторов файлов ??? пока хз, надо обсудить формат передаваемых данных
+            emdeddings: список эмбеддингов, соответсвующих документам
+            documents: список самих документов
+            metadatas: список словарей с метаданными для документов(теги и тп)
+
+        """
         self.collection.upsert(
             ids=[to_uuid(id) for id in ids],
             embeddings=embeddings,
@@ -32,6 +57,14 @@ class ChromaDB(VectorDB):
         )
 
     def search(self, query_embedding, n_results=3) -> SearchResult:
+        """
+        Функция поиска по коллекции
+
+        args:
+            qury_embedding: эмбеддинг запроса, по которому делаем поиск
+            n_results: количество ближайших/релевантных записей в возвращенном результате
+            include: какие поля будет включать возвращенные записи
+        """
         raw = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
@@ -45,10 +78,18 @@ class ChromaDB(VectorDB):
         )
 
     def delete(self, ids) -> None:
+        """
+        удаление записи/записей по ее/их id
 
+        args:
+            ids: cписок id на удаление
+        """
         self.collection.delete(ids=[to_uuid(id) for id in ids])
 
     def count(self) -> int:
+        """
+        Возвращает количество записей в коллекции
+        """
         return self.collection.count()
 
 
@@ -56,6 +97,17 @@ class ChromaDB(VectorDB):
 
 
 class QdrantDB(VectorDB):
+    """
+    Реализация интрфейса для Qdrant
+
+    args:
+        collection: название коллекции, которую создаем
+        vector_size: n-мерность векторов в коллекции
+        host: имя хоста, где задеплоена БД
+        port: порт, по которому доступна БД на хосте
+        in_memory: флаг, который позволяет запустить БД в ОП
+    """
+
     def __init__(
         self,
         collection: str,
@@ -85,7 +137,17 @@ class QdrantDB(VectorDB):
             )
 
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
+        """
+        Добавление записей в коллекцию.
+        Все передаваемые списки должны быть одинаковой длинны, иначе обрежет на самом коротком
 
+        args:
+            ids: список идентификаторов файлов ??? пока хз, надо обсудить формат передаваемых данных
+            emdeddings: список эмбеддингов, соответсвующих документам
+            documents: список самих документов
+            metadatas: список словарей с метаданными для документов(теги и тп)
+
+        """
         from qdrant_client.http.models import PointStruct
 
         points = [
@@ -107,6 +169,14 @@ class QdrantDB(VectorDB):
             self.client.upsert(collection_name=self.collection, points=points[i : i + BATCH_SIZE])
 
     def search(self, query_embedding, n_results=3) -> SearchResult:
+        """
+        Функция поиска по коллекции
+
+        args:
+            qury_embedding: эмбеддинг запроса, по которому делаем поиск
+            n_results: количество ближайших/релевантных записей в возвращенном результате
+            include: какие поля будет включать возвращенные записи
+        """
         result = self.client.query_points(
             collection_name=self.collection,
             query=query_embedding,
@@ -123,6 +193,12 @@ class QdrantDB(VectorDB):
         )
 
     def delete(self, ids) -> None:
+        """
+        удаление записи/записей по ее/их id
+
+        args:
+            ids: cписок id на удаление
+        """
         from qdrant_client.http.models import PointIdsList
 
         self.client.delete(
@@ -131,4 +207,7 @@ class QdrantDB(VectorDB):
         )
 
     def count(self):
+        """
+        Возвращает количество записей в коллекции
+        """
         return self.client.count(collection_name=self.collection).count
