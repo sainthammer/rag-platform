@@ -4,21 +4,21 @@
 Единственный экземпляр ``settings`` создаётся при импорте модуля и используется
 во всём приложении как глобальный объект-конфигурация.
 
-Выбор провайдера LLM:
-    Устанавливается переменной ``LLM_PROVIDER=openai|anthropic|ollama``.
-    Фабрика ``build_llm_provider()`` читает эту переменную и возвращает
-    готовый экземпляр нужного адаптера.
+Фабрики:
+    ``build_llm_provider()``  — создаёт LLMProvider по LLM_PROVIDER.
+    ``build_vector_db()``     — создаёт VectorDB по VECTOR_STORE_BACKEND.
+    ``build_embed_fn()``      — создаёт функцию получения эмбеддингов.
 """
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# TYPE_CHECKING позволяет использовать LLMProvider в аннотации без импорта
-# в рантайме — это разрывает циклический импорт (config → llm → config).
 if TYPE_CHECKING:
     from llm.ports import LLMProvider
+    from vector_store.ports import VectorDB
 
 
 class Settings(BaseSettings):
@@ -40,12 +40,9 @@ class Settings(BaseSettings):
     # LLM — выбор провайдера и модели
     # ------------------------------------------------------------------
 
-    # Какой провайдер использовать. Значение ограничено Literal, чтобы
-    # pydantic выдал ошибку при опечатке в .env вместо молчаливого неверного поведения.
     llm_provider: Literal["openai", "anthropic", "ollama"] = Field(
         default="openai", alias="LLM_PROVIDER"
     )
-    # Имя конкретной модели. Пустая строка = использовать дефолт из _PROVIDER_DEFAULTS.
     llm_model: str = Field(default="", alias="LLM_MODEL")
 
     # ------------------------------------------------------------------
@@ -54,7 +51,6 @@ class Settings(BaseSettings):
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
-    # Ollama работает локально и не требует ключа — только URL сервера.
     ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
 
     # ------------------------------------------------------------------
@@ -62,17 +58,23 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
 
     embedding_model: str = "text-embedding-3-small"
-    embedding_dimension: int = 1536  # должна совпадать с размером коллекции в векторном хранилище
+    # Должна совпадать с размерностью коллекций в векторном хранилище.
+    embedding_dimension: int = 1536
 
     # ------------------------------------------------------------------
     # Vector Store
     # ------------------------------------------------------------------
 
     vector_store_backend: Literal["chroma", "qdrant"] = "chroma"
+    # Имя коллекции по умолчанию, используемой в RAGPipeline.
+    default_collection: str = Field(default="default", alias="DEFAULT_COLLECTION")
     chroma_host: str = "localhost"
     chroma_port: int = 8000
+    # Если задан — ChromaDB использует локальное файловое хранилище (PersistentClient)
+    # вместо HttpClient. Удобно для разработки без Docker.
+    chroma_persist_dir: str = Field(default="", alias="CHROMA_PERSIST_DIR")
     qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: str = ""  # пустая строка = публичный/локальный Qdrant без аутентификации
+    qdrant_api_key: str = ""
 
     # ------------------------------------------------------------------
     # API
@@ -81,6 +83,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8080
     api_secret_key: str = "change-me-in-production"  # ОБЯЗАТЕЛЬНО менять в prod
+    jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
 
     # ------------------------------------------------------------------
     # Observability
@@ -90,8 +93,10 @@ class Settings(BaseSettings):
     prometheus_port: int = 9090
 
 
-# Дефолтные модели для каждого провайдера.
-# Используются в build_llm_provider(), когда LLM_MODEL не задан в .env.
+# ---------------------------------------------------------------------------
+# Дефолты моделей
+# ---------------------------------------------------------------------------
+
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-20251001",
@@ -99,53 +104,107 @@ _PROVIDER_DEFAULTS: dict[str, str] = {
 }
 
 
-def build_llm_provider(s: Settings | None = None) -> "LLMProvider":
-    """Создать экземпляр LLMProvider на основе текущей конфигурации.
+# ---------------------------------------------------------------------------
+# Фабрики компонентов
+# ---------------------------------------------------------------------------
 
-    Фабричная функция читает ``settings.llm_provider`` и возвращает готовый
-    адаптер. Импорты адаптеров выполняются лениво внутри веток ``if``, чтобы
-    не тянуть все SDK при любом запуске.
+def build_llm_provider(s: "Settings | None" = None) -> "LLMProvider":
+    """Создать LLMProvider по настройкам LLM_PROVIDER / LLM_MODEL.
 
     Args:
-        s: Объект настроек. Если ``None`` — используется глобальный ``settings``.
-            Явная передача полезна в тестах, где нужно проверить поведение
-            с конкретными значениями без изменения env.
+        s: Объект настроек. ``None`` → используется глобальный ``settings``.
 
     Returns:
-        Готовый к использованию экземпляр ``LLMProvider``.
-
-    Example::
-
-        # В production-коде:
-        llm = build_llm_provider()
-
-        # В тестах:
-        llm = build_llm_provider(Settings(llm_provider="ollama", llm_model="mistral"))
+        Готовый к использованию LLMProvider.
     """
     if s is None:
-        s = settings  # берём глобальный синглтон, если объект не передан
+        s = settings
 
-    # Если LLM_MODEL не задан — подставляем разумный дефолт для провайдера.
     model = s.llm_model or _PROVIDER_DEFAULTS[s.llm_provider]
 
     if s.llm_provider == "openai":
         from llm.adapters import OpenAIProvider
-
-        # ``or None``: pydantic хранит пустую строку как "", но SDK ожидает None
-        # при отсутствии ключа (чтобы прочитать OPENAI_API_KEY из env самостоятельно).
         return OpenAIProvider(model=model, api_key=s.openai_api_key or None)
 
     if s.llm_provider == "anthropic":
         from llm.adapters import AnthropicProvider
-
         return AnthropicProvider(model=model, api_key=s.anthropic_api_key or None)
 
-    # Единственный оставшийся вариант — "ollama".
     from llm.adapters import OllamaProvider
-
     return OllamaProvider(model=model, base_url=s.ollama_base_url)
 
 
-# Глобальный синглтон конфигурации — создаётся один раз при импорте модуля.
-# Весь код приложения должен использовать именно его, а не создавать Settings() заново.
+def build_vector_db(s: "Settings | None" = None, collection: str | None = None) -> "VectorDB":
+    """Создать VectorDB по настройкам VECTOR_STORE_BACKEND.
+
+    Args:
+        s: Объект настроек. ``None`` → используется глобальный ``settings``.
+        collection: Имя коллекции. ``None`` → берётся ``settings.default_collection``.
+
+    Returns:
+        Готовый к использованию VectorDB.
+    """
+    if s is None:
+        s = settings
+
+    col = collection or s.default_collection
+
+    if s.vector_store_backend == "qdrant":
+        from vector_store.adapters import QdrantDB
+
+        parsed = urlparse(s.qdrant_url)
+        return QdrantDB(
+            collection=col,
+            vector_size=s.embedding_dimension,
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6333,
+        )
+
+    from vector_store.adapters import ChromaDB
+    return ChromaDB(
+        collection=col,
+        persist_directory=s.chroma_persist_dir or None,
+        host=s.chroma_host,
+        port=s.chroma_port,
+    )
+
+
+def build_embed_fn(s: "Settings | None" = None) -> Callable[[str], list[float]]:
+    """Создать функцию получения эмбеддинга для произвольного текста.
+
+    Если задан OPENAI_API_KEY — использует OpenAI Embeddings API.
+    Иначе возвращает нулевой вектор нужной размерности (для тестов / Ollama).
+
+    Args:
+        s: Объект настроек. ``None`` → используется глобальный ``settings``.
+
+    Returns:
+        Callable ``(text: str) -> list[float]``.
+    """
+    if s is None:
+        s = settings
+
+    if s.openai_api_key:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=s.openai_api_key)
+        model = s.embedding_model
+        dim = s.embedding_dimension
+
+        def _openai_embed(text: str) -> list[float]:
+            resp = client.embeddings.create(model=model, input=text)
+            return resp.data[0].embedding
+
+        return _openai_embed
+
+    # Нулевой вектор — заглушка для локальной разработки без API-ключа.
+    dim = s.embedding_dimension
+
+    def _zero_embed(text: str) -> list[float]:
+        return [0.0] * dim
+
+    return _zero_embed
+
+
+# Глобальный синглтон — создаётся один раз при импорте модуля.
 settings = Settings()
