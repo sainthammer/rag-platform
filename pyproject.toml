@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-platform"
@@ -52,6 +52,10 @@ eval = [
     "ragas>=0.1.9",
     "datasets>=2.19.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "chunking*", "embeddings*", "evaluation*", "llm*", "mcp*", "observability*", "retrieval*", "vector_store*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
