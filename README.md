@@ -27,6 +27,7 @@ tests/
 Документация по оценке (RAGAS): [`evaluation/README.md`](evaluation/README.md)
 
 Документация по трейсингу (OpenTelemetry): [`observability/README.md`](observability/README.md)
+
 Подробная документация по модулю VECTOR STORE: [`vector_store/README.md`](vectore_store/README.md)
 
 ---
