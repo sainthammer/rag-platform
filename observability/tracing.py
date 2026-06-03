@@ -47,8 +47,8 @@ def instrument_fastapi(app: "FastAPI") -> None:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     except ImportError as e:  # pragma: no cover
         raise ImportError(
-            "Missing dependency 'opentelemetry-instrumentation-fastapi'. "
-            "Install project dependencies."
+            "Отсутствует зависимость 'opentelemetry-instrumentation-fastapi'. "
+            "Установите зависимости проекта."
         ) from e
 
     FastAPIInstrumentor.instrument_app(app)

@@ -26,7 +26,7 @@ def as_hf_dataset(
         from datasets import Dataset
     except ImportError as e:  # pragma: no cover
         raise ImportError(
-            "Missing optional dependency 'datasets'. Install with: pip install -e '.[eval]'"
+            "Отсутствует опциональная зависимость 'datasets'. Установите след. командой: pip install -e '.[eval]'"
         ) from e
 
     return Dataset.from_list(rows)
@@ -85,7 +85,7 @@ def evaluate_ragas(dataset: "Dataset"):
         )
     except ImportError as e:  # pragma: no cover
         raise ImportError(
-            "Missing optional dependency 'ragas'. Install with: pip install -e '.[eval]'"
+            "Отсутствует опциональная зависимость 'ragas'. Установите след. командой: pip install -e '.[eval]'"
         ) from e
 
     return evaluate(
