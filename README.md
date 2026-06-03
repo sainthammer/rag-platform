@@ -23,6 +23,7 @@ tests/
 ```
 
 Подробная документация по модулю LLM: [`llm/README.md`](llm/README.md)
+Подробная документация по модулю VECTOR STORE: [`vector_store/README.md`](vectore_store/README.md)
 
 ---
 
