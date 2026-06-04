@@ -61,8 +61,16 @@ class Settings(BaseSettings):
     # Embeddings
     # ------------------------------------------------------------------
 
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimension: int = 1536  # должна совпадать с размером коллекции в векторном хранилище
+    embedding_provider: Literal["openai", "sentence-transformers"] = Field(
+        default="openai", alias="EMBEDDING_PROVIDER"
+    )
+    embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
+    embedding_dimension: int = Field(default=1536, alias="EMBEDDING_DIMENSION")
+    embedding_normalize: bool = Field(default=True, alias="EMBEDDING_NORMALIZE")
+    embedding_cache_enabled: bool = Field(default=True, alias="EMBEDDING_CACHE_ENABLED")
+    embedding_cache_path: str = Field(
+        default=".cache/embeddings.sqlite3", alias="EMBEDDING_CACHE_PATH"
+    )
 
     # ------------------------------------------------------------------
     # Vector Store
