@@ -4,7 +4,14 @@ import math
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
-    """Вернуть вектор, приведённый к единичной L2-норме."""
+    """Вернуть вектор, приведённый к единичной L2-норме.
+
+    Args:
+        vector: Исходный embedding-вектор.
+
+    Returns:
+        Нормализованный вектор. Если входной вектор нулевой, возвращается его копия.
+    """
     norm = math.sqrt(sum(value * value for value in vector))
     if norm == 0:
         return list(vector)
@@ -12,17 +19,42 @@ def l2_normalize(vector: list[float]) -> list[float]:
 
 
 def normalize_batch(vectors: list[list[float]]) -> list[list[float]]:
-    """Нормализовать батч векторов."""
+    """Нормализовать батч векторов.
+
+    Args:
+        vectors: Список embedding-векторов.
+
+    Returns:
+        Список нормализованных embedding-векторов.
+    """
     return [l2_normalize(vector) for vector in vectors]
 
 
 def l2_norm(vector: list[float]) -> float:
-    """Посчитать L2-норму вектора."""
+    """Посчитать L2-норму вектора.
+
+    Args:
+        vector: Embedding-вектор.
+
+    Returns:
+        Евклидова длина вектора.
+    """
     return math.sqrt(sum(value * value for value in vector))
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
-    """Посчитать cosine similarity двух векторов."""
+    """Посчитать cosine similarity двух векторов.
+
+    Args:
+        left: Первый embedding-вектор.
+        right: Второй embedding-вектор.
+
+    Returns:
+        Значение cosine similarity в диапазоне от -1 до 1.
+
+    Raises:
+        ValueError: Если векторы имеют разную размерность.
+    """
     if len(left) != len(right):
         raise ValueError("vectors must have the same dimension")
 

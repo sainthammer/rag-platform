@@ -25,15 +25,38 @@ class CachedEmbeddingService(EmbeddingService):
         cache: EmbeddingCache,
         model_name: str,
     ) -> None:
+        """Сохранить базовый сервис, кэш и имя модели для ключей кэша.
+
+        Args:
+            base: Реальный embedding-сервис, который считает отсутствующие векторы.
+            cache: SQLite-кэш embedding-векторов.
+            model_name: Имя модели для построения ключей кэша.
+        """
         self.base = base
         self.cache = cache
         self.model_name = model_name
 
     @cached
     def embed(self, text: str) -> list[float]:
+        """Вернуть embedding одного текста с использованием кэша.
+
+        Args:
+            text: Текст для векторизации.
+
+        Returns:
+            Embedding-вектор текста.
+        """
         return self.base.embed(text)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Вернуть embeddings батча, считая только отсутствующие в кэше тексты.
+
+        Args:
+            texts: Список текстов для векторизации.
+
+        Returns:
+            Список embedding-векторов в порядке входных текстов.
+        """
         if not texts:
             return []
 
@@ -53,6 +76,11 @@ class CachedEmbeddingService(EmbeddingService):
         return [vector for vector in result if vector is not None]
 
     def dimension(self) -> int:
+        """Вернуть размерность базового embedding-сервиса.
+
+        Returns:
+            Количество координат embedding-вектора.
+        """
         return self.base.dimension()
 
 
@@ -61,6 +89,15 @@ def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
 
     Фабрика читает ``EMBEDDING_PROVIDER``, ``EMBEDDING_MODEL`` и параметры
     кэша. Возвращает либо провайдер, либо ``CachedEmbeddingService``.
+
+    Args:
+        s: Настройки приложения. Если ``None``, используется глобальный ``settings``.
+
+    Returns:
+        Готовый embedding-сервис.
+
+    Raises:
+        ValueError: Если указан неизвестный embedding-провайдер.
     """
     if s is None:
         from config import settings

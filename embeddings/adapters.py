@@ -39,6 +39,14 @@ class OpenAIEmbeddingService(EmbeddingService):
         normalize: bool = True,
         batch_limit: int = OPENAI_BATCH_LIMIT,
     ) -> None:
+        """Инициализировать OpenAI-клиент и параметры векторизации.
+
+        Args:
+            model: Имя embedding-модели OpenAI.
+            api_key: API-ключ OpenAI. Если ``None``, SDK читает ключ из окружения.
+            normalize: Нужно ли применять L2-нормализацию к векторам.
+            batch_limit: Максимальное количество текстов в одном API-вызове.
+        """
         from openai import OpenAI
 
         self.model = model
@@ -47,9 +55,25 @@ class OpenAIEmbeddingService(EmbeddingService):
         self.client = OpenAI(api_key=api_key)
 
     def embed(self, text: str) -> list[float]:
+        """Построить embedding для одного текста через batch-метод.
+
+        Args:
+            text: Текст для векторизации.
+
+        Returns:
+            Embedding-вектор текста.
+        """
         return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Построить embeddings для списка текстов через OpenAI API.
+
+        Args:
+            texts: Список текстов для векторизации.
+
+        Returns:
+            Список embedding-векторов в порядке входных текстов.
+        """
         if not texts:
             return []
 
@@ -62,6 +86,11 @@ class OpenAIEmbeddingService(EmbeddingService):
         return normalize_batch(vectors) if self.normalize else vectors
 
     def dimension(self) -> int:
+        """Вернуть размерность OpenAI embedding-модели.
+
+        Returns:
+            Количество координат embedding-вектора.
+        """
         if self.model in _OPENAI_DIMENSIONS:
             return _OPENAI_DIMENSIONS[self.model]
         return len(self.embed("Текст для измерения длины эмбеддинга"))
@@ -76,6 +105,12 @@ class SentenceTransformersService(EmbeddingService):
     """
 
     def __init__(self, model_name: str = "BAAI/bge-m3", normalize: bool = True) -> None:
+        """Загрузить SentenceTransformers-модель и сохранить параметры.
+
+        Args:
+            model_name: Имя модели HuggingFace/SentenceTransformers.
+            normalize: Нужно ли нормализовать embeddings внутри ``encode``.
+        """
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
@@ -83,9 +118,25 @@ class SentenceTransformersService(EmbeddingService):
         self.model = SentenceTransformer(model_name)
 
     def embed(self, text: str) -> list[float]:
+        """Построить embedding для одного текста через batch-метод.
+
+        Args:
+            text: Текст для векторизации.
+
+        Returns:
+            Embedding-вектор текста.
+        """
         return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Построить embeddings для списка текстов локальной моделью.
+
+        Args:
+            texts: Список текстов для векторизации.
+
+        Returns:
+            Список embedding-векторов в порядке входных текстов.
+        """
         if not texts:
             return []
 
@@ -97,6 +148,11 @@ class SentenceTransformersService(EmbeddingService):
         return [_as_float_list(vector) for vector in encoded]
 
     def dimension(self) -> int:
+        """Вернуть размерность текущей SentenceTransformers-модели.
+
+        Returns:
+            Количество координат embedding-вектора.
+        """
         if hasattr(self.model, "get_embedding_dimension"):
             dimension = self.model.get_embedding_dimension()
         else:
@@ -120,23 +176,59 @@ class FakeEmbeddingService(EmbeddingService):
         model_name: str = "fake-embedding",
         normalize: bool = False,
     ) -> None:
+        """Создать детерминированный fake-сервис заданной размерности.
+
+        Args:
+            size: Размерность fake-вектора.
+            model_name: Имя fake-модели для тестов и кэша.
+            normalize: Нужно ли нормализовать fake-векторы.
+        """
         self.size = size
         self.model_name = model_name
         self.normalize = normalize
         self.calls: list[list[str]] = []
 
     def embed(self, text: str) -> list[float]:
+        """Построить fake embedding для одного текста.
+
+        Args:
+            text: Текст для векторизации.
+
+        Returns:
+            Детерминированный fake-вектор.
+        """
         return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Построить fake embeddings для списка текстов.
+
+        Args:
+            texts: Список текстов для векторизации.
+
+        Returns:
+            Список fake-векторов в порядке входных текстов.
+        """
         self.calls.append(list(texts))
         vectors = [self._embed_one(text) for text in texts]
         return normalize_batch(vectors) if self.normalize else vectors
 
     def dimension(self) -> int:
+        """Вернуть настроенную размерность fake-вектора.
+
+        Returns:
+            Количество координат fake-вектора.
+        """
         return self.size
 
     def _embed_one(self, text: str) -> list[float]:
+        """Преобразовать текст в детерминированный вектор через SHA256.
+
+        Args:
+            text: Текст для преобразования.
+
+        Returns:
+            Fake-вектор фиксированной размерности.
+        """
         digest = hashlib.sha256(text.encode()).digest()
         values = [digest[i % len(digest)] / 255.0 for i in range(self.size)]
         if all(value == 0 for value in values):
@@ -145,6 +237,18 @@ class FakeEmbeddingService(EmbeddingService):
 
 
 def _batched(items: list[str], size: int) -> Iterable[list[str]]:
+    """Разбить список строк на батчи указанного размера.
+
+    Args:
+        items: Исходный список строк.
+        size: Максимальный размер одного батча.
+
+    Yields:
+        Очередной батч строк.
+
+    Raises:
+        ValueError: Если размер батча меньше или равен нулю.
+    """
     if size <= 0:
         raise ValueError("Размер батча должен быть больше ноля")
     for start in range(0, len(items), size):
@@ -152,6 +256,14 @@ def _batched(items: list[str], size: int) -> Iterable[list[str]]:
 
 
 def _as_float_list(vector: object) -> list[float]:
+    """Привести array-like embedding-вектор к ``list[float]``.
+
+    Args:
+        vector: Вектор из SentenceTransformers, NumPy, Torch или обычный iterable.
+
+    Returns:
+        Обычный Python-список чисел ``float``.
+    """
     if hasattr(vector, "tolist"):
         return [float(value) for value in vector.tolist()]
     if isinstance(vector, list):

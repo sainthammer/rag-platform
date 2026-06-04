@@ -20,7 +20,15 @@ T = TypeVar("T")
 
 
 def cache_key(text: str, model_name: str) -> str:
-    """Собрать ключ кэша: ``sha256(text + model_name)``."""
+    """Собрать ключ кэша: ``sha256(text + model_name)``.
+
+    Args:
+        text: Текст, для которого строится embedding.
+        model_name: Имя embedding-модели.
+
+    Returns:
+        Hex-строка SHA256, используемая как первичный ключ в SQLite.
+    """
     return hashlib.sha256(f"{text}{model_name}".encode()).hexdigest()
 
 
@@ -28,6 +36,11 @@ class EmbeddingCache:
     """Персистентный SQLite-кэш для embedding-векторов."""
 
     def __init__(self, path: str | Path = ".cache/embeddings.sqlite3") -> None:
+        """Создать кэш и инициализировать SQLite-таблицу.
+
+        Args:
+            path: Путь к SQLite-файлу или ``":memory:"`` для in-memory базы.
+        """
         self._memory_conn: sqlite3.Connection | None = None
         if str(path) == ":memory:":
             self.path = Path(":memory:")
@@ -44,6 +57,13 @@ class EmbeddingCache:
         """Вернуть сохранённый вектор.
 
         Если значения нет в кэше, возвращается ``None``.
+
+        Args:
+            text: Исходный текст.
+            model_name: Имя embedding-модели.
+
+        Returns:
+            Сохранённый embedding-вектор или ``None``.
         """
         key = cache_key(text, model_name)
         with self._connect() as conn:
@@ -56,7 +76,13 @@ class EmbeddingCache:
         return [float(value) for value in json.loads(row[0])]
 
     def set(self, text: str, model_name: str, vector: list[float]) -> None:
-        """Сохранить embedding-вектор в кэш."""
+        """Сохранить embedding-вектор в кэш.
+
+        Args:
+            text: Исходный текст.
+            model_name: Имя embedding-модели.
+            vector: Embedding-вектор для сохранения.
+        """
         key = cache_key(text, model_name)
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         vector_json = json.dumps(vector, separators=(",", ":"))
@@ -75,11 +101,28 @@ class EmbeddingCache:
             )
 
     def get_many(self, texts: list[str], model_name: str) -> list[list[float] | None]:
-        """Вернуть кэшированные векторы в порядке входных текстов."""
+        """Вернуть кэшированные векторы в порядке входных текстов.
+
+        Args:
+            texts: Список исходных текстов.
+            model_name: Имя embedding-модели.
+
+        Returns:
+            Список той же длины, где отсутствующие значения представлены ``None``.
+        """
         return [self.get(text, model_name) for text in texts]
 
     def set_many(self, texts: list[str], model_name: str, vectors: list[list[float]]) -> None:
-        """Сохранить батч embedding-векторов одной транзакцией."""
+        """Сохранить батч embedding-векторов одной транзакцией.
+
+        Args:
+            texts: Список исходных текстов.
+            model_name: Имя embedding-модели.
+            vectors: Список embedding-векторов.
+
+        Raises:
+            ValueError: Если количество текстов и векторов не совпадает.
+        """
         if len(texts) != len(vectors):
             raise ValueError("Тексты и вектора должны иметь одинаковую длину")
 
@@ -107,11 +150,17 @@ class EmbeddingCache:
             )
 
     def _connect(self) -> sqlite3.Connection:
+        """Открыть соединение с SQLite или вернуть in-memory соединение.
+
+        Returns:
+            Активное соединение SQLite.
+        """
         if self._memory_conn is not None:
             return self._memory_conn
         return sqlite3.connect(self.path)
 
     def _init_db(self) -> None:
+        """Создать таблицу embeddings, если она ещё не существует."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -130,10 +179,25 @@ def cached(fn: Callable[P, T]) -> Callable[P, T]:
     """Декоратор кэширования.
 
     Ожидает, что у объекта есть атрибуты ``cache`` и ``model_name``.
+
+    Args:
+        fn: Метод, который строит embedding для одного текста.
+
+    Returns:
+        Обёрнутый метод с проверкой SQLite-кэша перед вычислением.
     """
 
     @functools.wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        """Выполнить метод с проверкой single-text embedding в кэше.
+
+        Args:
+            *args: Позиционные аргументы исходного метода.
+            **kwargs: Именованные аргументы исходного метода.
+
+        Returns:
+            Значение из кэша или результат исходного метода.
+        """
         if len(args) < 2 or not isinstance(args[1], str):
             return fn(*args, **kwargs)
 
