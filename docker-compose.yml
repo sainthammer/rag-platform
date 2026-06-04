@@ -4,9 +4,17 @@ services:
     ports:
       - "${API_PORT:-8080}:8080"
     env_file: .env
+    environment:
+      # Override localhost URLs from .env with Docker service names
+      - CHROMA_HOST=chroma
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     depends_on:
       - chroma
       - qdrant
+      - jaeger
+      - ollama
     volumes:
       - .:/app
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
@@ -25,12 +33,30 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
   prometheus:
     image: prom/prometheus:latest
     ports:
       - "9090:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - api
 
   grafana:
     image: grafana/grafana:latest
@@ -40,9 +66,10 @@ services:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
 
 volumes:
   chroma_data:
   qdrant_data:
   grafana_data:
+  ollama_data:
