@@ -3,6 +3,7 @@
 """
 
 from vector_store.adapters import ChromaDB, QdrantDB
+from vector_store.ports import VectorDB
 
 EMBEDDINGS = [
     [0.1, 0.2, 0.3, 0.4],
@@ -15,7 +16,7 @@ METAS = [{"animal": "cat"}, {"animal": "dog"}, {"animal": "bird"}]
 QUERY_VEC = [0.15, 0.25, 0.35, 0.45]
 
 
-def run(db, label):
+def run(db: VectorDB, label: str):
     print(f"\n{'─' * 40}")
     print(f"  {label}")
     print(f"{'─' * 40}")
