@@ -68,9 +68,9 @@ service.dimension()            # размерность вектора
 Настройки читаются через `config.py` из переменных окружения:
 
 ```bash
-EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_DIMENSION=1536
+EMBEDDING_PROVIDER=sentence-transformers
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIMENSION=1024
 EMBEDDING_NORMALIZE=true
 EMBEDDING_CACHE_ENABLED=true
 EMBEDDING_CACHE_PATH=.cache/embeddings.sqlite3
@@ -170,9 +170,8 @@ python -m embeddings.example sentence-transformers
 - первые 8 координат первого вектора;
 - cosine similarity между текстами.
 
-Полный embedding обычно не выводится: для `BAAI/bge-m3` это 1024 числа,
-для `text-embedding-3-small` — 1536 чисел. Для проверки полезнее смотреть
-размерность, норму и сходство между текстами.
+Полный embedding обычно не выводится: для `BAAI/bge-m3` это 1024 числа.
+Для проверки полезнее смотреть размерность, норму и сходство между текстами.
 
 `sentence-transformers` может скачать модель при первом запуске.
 Если модель уже скачана, но HuggingFace недоступен, можно запустить в офлайн-режиме:

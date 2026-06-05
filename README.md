@@ -73,9 +73,9 @@ cp .env.example .env
 и SQLite-кэш. Провайдер выбирается через `.env`:
 
 ```bash
-EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_DIMENSION=1536
+EMBEDDING_PROVIDER=sentence-transformers
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIMENSION=1024
 EMBEDDING_NORMALIZE=true
 EMBEDDING_CACHE_ENABLED=true
 EMBEDDING_CACHE_PATH=.cache/embeddings.sqlite3
