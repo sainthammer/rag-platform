@@ -67,3 +67,39 @@ Endpoint для экспорта берётся из `config.py`:
 - `opentelemetry-instrumentation-fastapi`
 
 Если пакет не установлен, `instrument_fastapi()` выбросит `ImportError` с подсказкой.
+
+---
+
+## Запуск `example.py`
+
+### Режим по умолчанию — вывод span-ов в консоль (без внешних сервисов)
+
+```powershell
+# из корня проекта
+python observability\example.py
+```
+
+Span-ы печатаются в stdout в виде JSON через `ConsoleSpanExporter`.
+Полезно для отладки трейсинга без Jaeger.
+
+### Режим Jaeger — отправка span-ов в реальный коллектор
+
+**1. Запустить Jaeger через Docker:**
+
+```powershell
+docker run --rm --name jaeger -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
+```
+
+**2. Задать endpoint в `.env`:**
+
+```
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+**3. Запустить example в jaeger-режиме:**
+
+```powershell
+python observability\example.py jaeger
+```
+
+**4. Открыть UI:** `http://localhost:16686` → выбрать сервис `rag-platform-example` → `Find Traces`.
