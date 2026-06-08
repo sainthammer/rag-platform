@@ -1,8 +1,9 @@
-"""Демонстрация модуля observability: трейсинг OpenTelemetry.
+"""Демонстрация модуля observability: трейсинг OpenTelemetry и Prometheus-метрики.
 
 Запуск:
     PYTHONPATH=. .venv/Scripts/python observability/example.py           # вывод в консоль
     PYTHONPATH=. .venv/Scripts/python observability/example.py jaeger    # отправка в Jaeger
+    PYTHONPATH=. .venv/Scripts/python observability/example.py server    # запуск API с /v1/metrics
 
 Режим jaeger требует запущенного Jaeger all-in-one и переменной OTEL_EXPORTER_OTLP_ENDPOINT.
 Поднять локально через Docker:
@@ -13,6 +14,8 @@
     1. Инициализация TracerProvider (ConsoleSpanExporter или OTLP → Jaeger).
     2. Ручное создание корневого и вложенного span с атрибутами.
     3. Инструментация FastAPI-приложения через instrument_fastapi().
+    4. Prometheus-метрики: Counter, Histogram, generate_latest().
+    5. (server-режим) Запуск FastAPI-сервера с /v1/metrics.
 """
 
 import sys
@@ -83,7 +86,102 @@ def demo_fastapi_instrumentation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Режим Jaeger: реальный setup_tracing() с OTLP-экспортом
+# 3. Prometheus-метрики
+# ---------------------------------------------------------------------------
+
+def demo_metrics() -> None:
+    """Показать, как работают Counter и Histogram из observability/metrics.py.
+
+    Имитирует несколько RAG-запросов: обновляет счётчики и гистограммы,
+    затем печатает актуальный срез метрик через generate_latest().
+    """
+    from prometheus_client import generate_latest
+
+    from observability.metrics import (
+        EMBEDDING_LATENCY_SECONDS,
+        EMBEDDING_REQUESTS_TOTAL,
+        LLM_LATENCY_SECONDS,
+        LLM_REQUESTS_TOTAL,
+        RAG_LATENCY_SECONDS,
+        RAG_REQUESTS_TOTAL,
+        RETRIEVAL_CHUNK_COUNT,
+    )
+
+    print("─── 3. Prometheus-метрики ───")
+
+    # Имитация трёх успешных RAG-запросов с разной задержкой
+    for latency in (0.4, 0.9, 2.1):
+        RAG_REQUESTS_TOTAL.labels(status="success").inc()
+        RAG_LATENCY_SECONDS.observe(latency)
+
+    # Имитация одного ошибочного RAG-запроса
+    RAG_REQUESTS_TOTAL.labels(status="error").inc()
+
+    # Имитация retrieval: 3 и 5 чанков в двух запросах
+    RETRIEVAL_CHUNK_COUNT.observe(3)
+    RETRIEVAL_CHUNK_COUNT.observe(5)
+
+    # Имитация embedding-запросов
+    EMBEDDING_REQUESTS_TOTAL.labels(model="text-embedding-3-small", status="success").inc()
+    EMBEDDING_LATENCY_SECONDS.labels(model="text-embedding-3-small").observe(0.07)
+
+    # Имитация LLM-запросов
+    LLM_REQUESTS_TOTAL.labels(provider="openai", model="gpt-4o-mini", status="success").inc()
+    LLM_LATENCY_SECONDS.labels(provider="openai", model="gpt-4o-mini").observe(1.2)
+
+    # Генерируем текст метрик в Prometheus exposition format
+    metrics_text = generate_latest().decode("utf-8")
+
+    # Печатаем только строки наших метрик (отфильтровываем стандартные python_* / process_*)
+    our_prefixes = ("rag_", "embedding_", "llm_", "retrieval_")
+    lines = [
+        line for line in metrics_text.splitlines()
+        if (
+            any(line.startswith(pfx) for pfx in our_prefixes)
+            or (line.startswith("# ") and any(pfx in line for pfx in our_prefixes))
+        )
+    ]
+
+    print("  Срез метрик (формат Prometheus exposition):")
+    for line in lines:
+        print(f"    {line}")
+    print()
+    print("  В production этот текст отдаёт GET /v1/metrics.")
+    print("  Prometheus scrape-job забирает его каждые N секунд.\n")
+
+
+# ---------------------------------------------------------------------------
+# 4. Режим server: FastAPI с /v1/metrics
+# ---------------------------------------------------------------------------
+
+def demo_server() -> None:
+    """Запустить FastAPI-сервер с эндпоинтом /v1/metrics.
+
+    После старта:
+        GET http://localhost:8080/health      → {"status": "ok"}
+        GET http://localhost:8080/v1/metrics  → метрики Prometheus
+
+    Остановить: Ctrl+C.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        print("  Пропущено: установите uvicorn — pip install uvicorn[standard]")
+        return
+
+    from api.app import app
+
+    print("─── server-режим ───")
+    print("  Запускаем uvicorn на http://localhost:8080")
+    print("  GET /health       → {\"status\": \"ok\"}")
+    print("  GET /v1/metrics   → метрики Prometheus")
+    print("  Остановить: Ctrl+C\n")
+
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+
+
+# ---------------------------------------------------------------------------
+# 5. Режим Jaeger: реальный setup_tracing() с OTLP-экспортом
 # ---------------------------------------------------------------------------
 
 def demo_jaeger() -> None:
@@ -123,15 +221,24 @@ def demo_jaeger() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    use_jaeger = len(sys.argv) > 1 and sys.argv[1] == "jaeger"
+    """Точка входа демонстрации observability-модуля.
 
-    if use_jaeger:
+    Без аргументов: консольный вывод span-ов + демонстрация метрик.
+    jaeger:  отправка span-ов в Jaeger через OTLP.
+    server:  запуск FastAPI с /health и /v1/metrics.
+    """
+    mode = sys.argv[1] if len(sys.argv) > 1 else "console"
+
+    if mode == "jaeger":
         demo_jaeger()
+    elif mode == "server":
+        demo_server()
     else:
         provider = _setup_console_tracing()
         demo_spans()
         demo_fastapi_instrumentation()
         provider.shutdown()
+        demo_metrics()
 
     print("✓ Готово")
 
