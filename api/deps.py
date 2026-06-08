@@ -8,8 +8,8 @@
 
 from fastapi import Request
 
-from llm.pipeline import RAGPipeline
 from llm.ports import LLMProvider
+from retrieval.pipeline import RAGPipeline
 from vector_store.ports import VectorDB
 
 

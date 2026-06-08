@@ -8,9 +8,8 @@ from fastapi import Depends, FastAPI
 
 from api.middleware.auth import require_auth
 from api.routers import collections, health
-from config import build_embed_fn, build_llm_provider, build_vector_db, settings
-from llm.pipeline import RAGPipeline
-from llm.token_budget import TokenBudgetManager
+from config import build_embedding_service, build_llm_provider, build_vector_db, settings
+from retrieval.pipeline import RAGPipeline
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -26,12 +25,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm = build_llm_provider(settings)
     vector_db = build_vector_db(settings)
     store_client = vector_db.client  # type: ignore[attr-defined]
-    embed_fn = build_embed_fn(settings)
+    embed_service = build_embedding_service(settings)
     pipeline = RAGPipeline(
         llm=llm,
-        vector_db=vector_db,
-        embed_fn=embed_fn,
-        budget=TokenBudgetManager(),
+        vector_db_factory=lambda name: build_vector_db(settings, collection=name),
+        embed_fn=embed_service.embed,
     )
 
     app.state.llm = llm

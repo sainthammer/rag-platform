@@ -2,7 +2,7 @@
 
 Тесты используют:
   - реальный ChromaDB (PersistentClient через tmp_path pytest);
-  - детерминированный fake_embed() — SHA256-хэш без внешних зависимостей;
+  - FakeEmbeddingService из embeddings.adapters — детерминированные векторы без внешних сервисов;
   - MockLLM — захватывает вызовы, возвращает предсказуемый ответ.
 
 Проверяется:
@@ -16,31 +16,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import math
 from pathlib import Path
 from typing import AsyncGenerator
 
 import pytest
 
+from embeddings.adapters import FakeEmbeddingService
 from llm.llm_dataclasses import Message
 from llm.ports import LLMProvider
 from retrieval.pipeline import FALLBACK_ANSWER, RAGPipeline, RAGResponse, SourceChunk
 from vector_store.adapters import ChromaDB
 
-# ---------------------------------------------------------------------------
-# Вспомогательный fake-embedding (без внешних зависимостей)
-# ---------------------------------------------------------------------------
-
-_EMBED_DIM = 8
-
-
-def fake_embed(text: str) -> list[float]:
-    """Детерминированный unit-norm вектор на базе SHA256."""
-    digest = hashlib.sha256(text.encode()).digest()
-    values = [digest[i % len(digest)] / 255.0 for i in range(_EMBED_DIM)]
-    norm = math.sqrt(sum(v * v for v in values))
-    return [v / norm for v in values] if norm > 0 else values
+_EMBED_SERVICE = FakeEmbeddingService(size=8, normalize=True)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +82,7 @@ def populated_db(tmp_path: Path) -> ChromaDB:
     db = ChromaDB(collection="docs", persist_directory=str(tmp_path / "chroma"))
     db.add(
         ids=[f"doc{i}" for i in range(len(_DOCS))],
-        embeddings=[fake_embed(doc) for doc in _DOCS],
+        embeddings=_EMBED_SERVICE.embed_batch(_DOCS),
         documents=_DOCS,
         metadatas=_METADATAS,
     )
@@ -116,7 +103,7 @@ def _make_pipeline(
     return RAGPipeline(
         llm=llm or MockLLM(),
         vector_db_factory=lambda _: db,
-        embed_fn=fake_embed,
+        embed_fn=_EMBED_SERVICE.embed,
         n_results=3,
         score_threshold=score_threshold,
     )

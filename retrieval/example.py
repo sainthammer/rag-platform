@@ -5,14 +5,15 @@
 """
 
 import asyncio
-import hashlib
-import math
 from typing import AsyncGenerator
 
+from embeddings.adapters import FakeEmbeddingService
 from llm.llm_dataclasses import Message
 from llm.ports import LLMProvider
 from retrieval.pipeline import RAGPipeline
 from vector_store.adapters import ChromaDB
+
+_EMBED = FakeEmbeddingService(size=16, normalize=True)
 
 DOCS = [
     "RAG (Retrieval-Augmented Generation) объединяет поиск по документам и генерацию ответа LLM.",
@@ -20,15 +21,6 @@ DOCS = [
     "Embedding-вектор — числовое представление текста, где похожие тексты близки в пространстве.",
     "Fallback срабатывает, когда retrieval не нашёл релевантных чанков выше порога.",
 ]
-
-
-# --- Fake embedding (детерминированный, без сети) ---
-
-def fake_embed(text: str, dim: int = 16) -> list[float]:
-    digest = hashlib.sha256(text.encode()).digest()
-    values = [digest[i % len(digest)] / 255.0 for i in range(dim)]
-    norm = math.sqrt(sum(v * v for v in values))
-    return [v / norm for v in values] if norm > 0 else values
 
 
 # --- Fake LLM (имитирует ответ модели) ---
@@ -55,7 +47,7 @@ async def main() -> None:
     db = ChromaDB(collection="demo", persist_directory=".tmp/demo-chroma")
     db.add(
         ids=[f"doc{i}" for i in range(len(DOCS))],
-        embeddings=[fake_embed(d) for d in DOCS],
+        embeddings=_EMBED.embed_batch(DOCS),
         documents=DOCS,
         metadatas=[{"source": f"doc{i}.txt"} for i in range(len(DOCS))],
     )
@@ -63,7 +55,7 @@ async def main() -> None:
     pipeline = RAGPipeline(
         llm=FakeLLM(),
         vector_db_factory=lambda _: db,
-        embed_fn=fake_embed,
+        embed_fn=_EMBED.embed,
         n_results=3,
         score_threshold=0.1,
     )
@@ -88,7 +80,7 @@ async def main() -> None:
     pipeline_strict = RAGPipeline(
         llm=FakeLLM(),
         vector_db_factory=lambda _: db,
-        embed_fn=fake_embed,
+        embed_fn=_EMBED.embed,
         score_threshold=1.1,
     )
     fb = await pipeline_strict.ask("вопрос без шансов", collection="demo")

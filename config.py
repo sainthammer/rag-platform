@@ -5,18 +5,19 @@
 во всём приложении как глобальный объект-конфигурация.
 
 Фабрики:
-    ``build_llm_provider()``  — создаёт LLMProvider по LLM_PROVIDER.
-    ``build_vector_db()``     — создаёт VectorDB по VECTOR_STORE_BACKEND.
-    ``build_embed_fn()``      — создаёт функцию получения эмбеддингов.
+    ``build_llm_provider()``       — создаёт LLMProvider по LLM_PROVIDER.
+    ``build_vector_db()``          — создаёт VectorDB по VECTOR_STORE_BACKEND.
+    ``build_embedding_service()``  — создаёт EmbeddingService по EMBEDDING_PROVIDER.
 """
 
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
+    from embeddings.ports import EmbeddingService
     from llm.ports import LLMProvider
     from vector_store.ports import VectorDB
 
@@ -176,41 +177,21 @@ def build_vector_db(s: "Settings | None" = None, collection: str | None = None) 
     )
 
 
-def build_embed_fn(s: "Settings | None" = None) -> Callable[[str], list[float]]:
-    """Создать функцию получения эмбеддинга для произвольного текста.
+def build_embedding_service(s: "Settings | None" = None) -> "EmbeddingService":
+    """Создать EmbeddingService по настройкам EMBEDDING_PROVIDER.
 
-    Если задан OPENAI_API_KEY — использует OpenAI Embeddings API.
-    Иначе возвращает нулевой вектор нужной размерности (для тестов / Ollama).
+    Делегирует в ``embeddings.service.build_embedding_service``.
+    Провайдер, модель, нормализация и SQLite-кэш читаются из ``Settings``.
 
     Args:
         s: Объект настроек. ``None`` → используется глобальный ``settings``.
 
     Returns:
-        Callable ``(text: str) -> list[float]``.
+        Готовый EmbeddingService (возможно, обёрнутый в CachedEmbeddingService).
     """
-    if s is None:
-        s = settings
+    from embeddings.service import build_embedding_service as _build
 
-    if s.openai_api_key:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=s.openai_api_key)
-        model = s.embedding_model
-        dim = s.embedding_dimension
-
-        def _openai_embed(text: str) -> list[float]:
-            resp = client.embeddings.create(model=model, input=text)
-            return resp.data[0].embedding
-
-        return _openai_embed
-
-    # Нулевой вектор — заглушка для локальной разработки без API-ключа.
-    dim = s.embedding_dimension
-
-    def _zero_embed(text: str) -> list[float]:
-        return [0.0] * dim
-
-    return _zero_embed
+    return _build(s or settings)
 
 
 # Глобальный синглтон — создаётся один раз при импорте модуля.

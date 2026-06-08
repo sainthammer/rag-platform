@@ -19,7 +19,10 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Callable
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
+
+if TYPE_CHECKING:
+    from config import Settings
 
 from llm.llm_dataclasses import Message
 from llm.ports import LLMProvider
@@ -230,6 +233,37 @@ class RAGPipeline:
             Message(role="system", content=self.template.format_system(context)),
             Message(role="user", content=self.template.format_user(question)),
         ]
+
+
+def build_rag_pipeline(
+    s: "Settings | None" = None,
+    **kwargs: object,
+) -> RAGPipeline:
+    """Собрать RAGPipeline из настроек окружения.
+
+    Читает ``EMBEDDING_PROVIDER``, ``LLM_PROVIDER``, ``VECTOR_STORE_BACKEND``
+    из ``Settings`` и возвращает готовый пайплайн.
+
+    Args:
+        s: Объект настроек. ``None`` → используется глобальный ``settings``.
+        **kwargs: Любые параметры ``RAGPipeline`` для переопределения дефолтов
+            (например, ``score_threshold=0.4``, ``n_results=10``).
+
+    Returns:
+        Готовый ``RAGPipeline``.
+    """
+    from config import build_embedding_service, build_llm_provider, build_vector_db
+    from config import settings as _settings
+
+    s = s or _settings  # type: ignore[assignment]
+    embed_service = build_embedding_service(s)
+
+    return RAGPipeline(
+        llm=build_llm_provider(s),
+        vector_db_factory=lambda name: build_vector_db(s, collection=name),
+        embed_fn=embed_service.embed,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def _distance_to_score(distance: float) -> float:

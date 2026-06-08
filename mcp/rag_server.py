@@ -26,7 +26,7 @@ import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from config import build_embed_fn, build_vector_db, settings
+from config import build_embedding_service, build_vector_db, settings
 
 if TYPE_CHECKING:
     from vector_store.ports import VectorDB
@@ -49,7 +49,7 @@ def _get_components() -> "tuple[VectorDB, object]":
     if _vector_db is None:
         _vector_db = build_vector_db(settings)
     if _embed_fn is None:
-        _embed_fn = build_embed_fn(settings)
+        _embed_fn = build_embedding_service(settings).embed
     return _vector_db, _embed_fn
 
 
