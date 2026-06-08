@@ -74,7 +74,7 @@ class ChromaDB(VectorDB):
             ids=raw["ids"][0],
             documents=(raw["documents"] or [[]])[0],
             distances=(raw["distances"] or [[]])[0],
-            metadatas=(raw["metadatas"] or [[]])[0],
+            metadatas=[dict(m) for m in (raw["metadatas"] or [[]])[0]],
         )
 
     def delete(self, ids) -> None:
@@ -148,7 +148,7 @@ class QdrantDB(VectorDB):
             metadatas: список словарей с метаданными для документов(теги и тп)
 
         """
-        from qdrant_client.http.models import PointStruct
+        from qdrant_client.models import PointStruct
 
         points = [
             PointStruct(
@@ -187,9 +187,11 @@ class QdrantDB(VectorDB):
 
         return SearchResult(
             ids=[str(h.id) for h in hits],
-            documents=[h.payload.get("document", "") for h in hits],
+            documents=[(h.payload or {}).get("document", "") for h in hits],
             distances=[h.score for h in hits],
-            metadatas=[{k: v for k, v in h.payload.items() if k != "document"} for h in hits],
+            metadatas=[
+                {k: v for k, v in (h.payload or {}).items() if k != "document"} for h in hits
+            ],
         )
 
     def delete(self, ids) -> None:
