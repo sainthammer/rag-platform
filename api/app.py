@@ -7,8 +7,9 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI
 
 from api.middleware.auth import require_auth
-from api.routers import collections, health
+from api.routers import collections, health, metrics
 from config import build_embedding_service, build_llm_provider, build_vector_db, settings
+from observability.tracing import instrument_fastapi
 from retrieval.pipeline import RAGPipeline
 
 logger = logging.getLogger("uvicorn.error")
@@ -64,3 +65,6 @@ app.include_router(
     prefix="/v1",
     dependencies=[Depends(require_auth)],
 )
+
+app.include_router(metrics.router, prefix="/v1")
+instrument_fastapi(app)

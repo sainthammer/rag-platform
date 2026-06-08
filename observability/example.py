@@ -173,7 +173,7 @@ def demo_server() -> None:
 
     print("─── server-режим ───")
     print("  Запускаем uvicorn на http://localhost:8080")
-    print("  GET /health       → {\"status\": \"ok\"}")
+    print("  GET /v1/health    → {\"status\": \"ok\", ...}")
     print("  GET /v1/metrics   → метрики Prometheus")
     print("  Остановить: Ctrl+C\n")
 
