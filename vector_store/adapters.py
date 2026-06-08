@@ -155,37 +155,28 @@ class QdrantDB(VectorDB):
             )
 
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
-        """
-        Добавление записей в коллекцию.
-        Все передаваемые списки должны быть одинаковой длинны, иначе обрежет на самом коротком
-
-        args:
-            ids: список идентификаторов файлов ??? пока хз, надо обсудить формат передаваемых данных
-            emdeddings: список эмбеддингов, соответсвующих документам
-            documents: список самих документов
-            metadatas: список словарей с метаданными для документов(теги и тп)
-
-        """
         from qdrant_client.models import PointStruct, SparseVector
 
-        documents = documents or [""] * len(ids)
+        documents = [(doc if doc else "") for doc in (documents or [""] * len(ids))]
         metadatas = metadatas or [{}] * len(ids)
 
-        sparse_vecs: SparseVector | list = [None] * len(ids)
+        sparse_vecs = [None] * len(ids)
+        if self.use_sparse and self.sparse_model is not None:
+            sparse_vecs = list(self.sparse_model.embed(documents))
 
         points = []
-
         for id, vec, doc, meta, sp in zip(ids, embeddings, documents, metadatas, sparse_vecs):
-            vector = {"dence": vec}
-            if self.use_sparse:
-                vector["sparce"] = SparseVector(
+            vector = {"dense": vec}
+            if self.use_sparse and sp is not None:
+                vector["sparse"] = SparseVector(
                     indices=sp.indices.tolist(),
                     values=sp.values.tolist(),
                 )
-
             points.append(
                 PointStruct(
-                    id=to_uuid(id), vector=vector, payload={"document": doc or "", **(meta or {})}
+                    id=to_uuid(id),
+                    vector=vector,
+                    payload={"document": doc, **(meta or {})},
                 )
             )
 
@@ -329,8 +320,8 @@ class HybridVectorStore(VectorDB):
             metadatas=[lookup[doc_id][1] for doc_id, _ in top],
         )
 
-        def delete(self, ids) -> None:
-            self.store.delete(ids)
+    def delete(self, ids) -> None:
+        self.store.delete(ids)
 
-        def count(self) -> int:
-            return self.store.count()
+    def count(self) -> int:
+        return self.store.count()
