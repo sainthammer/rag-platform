@@ -8,21 +8,23 @@
 
 from fastapi import Request
 
+from embeddings.ports import EmbeddingService
 from llm.ports import LLMProvider
 from retrieval.pipeline import RAGPipeline
 from vector_store.ports import VectorDB
 
 
 def get_pipeline(request: Request) -> RAGPipeline:
-    """Вернуть инициализированный RAGPipeline из app.state."""
     return request.app.state.pipeline  # type: ignore[no-any-return]
 
 
 def get_vector_db(request: Request) -> VectorDB:
-    """Вернуть VectorDB (per-collection) из app.state."""
     return request.app.state.vector_db  # type: ignore[no-any-return]
 
 
 def get_llm(request: Request) -> LLMProvider:
-    """Вернуть LLMProvider из app.state."""
     return request.app.state.llm  # type: ignore[no-any-return]
+
+
+def get_embed_service(request: Request) -> EmbeddingService:
+    return request.app.state.embed_service  # type: ignore[no-any-return]
