@@ -1,3 +1,5 @@
+"""Структура данных для тест-кейса оценки RAG-пайплайна."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

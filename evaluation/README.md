@@ -124,3 +124,60 @@ RAGAS и HuggingFace Datasets оформлены как optional dependencies.
 ```bash
 pip install -e ".[eval]"
 ```
+
+---
+
+## Запуск `example.py`
+
+### Режим OpenAI (требует API-ключ)
+
+**1. Задать ключ в `.env`:**
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+**2. Запустить:**
+
+```powershell
+# из корня проекта
+python evaluation\example.py
+```
+
+### Режим Ollama (без API-ключа, локально)
+
+**1. Установить и запустить Ollama:**
+
+```powershell
+# Скачать установщик: https://ollama.com/download/windows
+# После установки в отдельном терминале:
+ollama serve
+```
+
+**2. Скачать модели (один раз):**
+
+```powershell
+# LLM для оценки метрик faithfulness / context_precision / context_recall
+ollama pull mistral:7b
+
+# Embeddings для метрики response_relevancy
+ollama pull nomic-embed-text
+
+# Убедиться что модели доступны
+ollama list
+```
+
+**3. Запустить example:**
+
+```powershell
+python evaluation\example.py ollama
+```
+
+> Оценка запускается на 5 mock-кейсах — реальные ответы и контексты
+> подставляются вашим RAG-пайплайном через `build_rows_from_testcases()`.
+
+### Примечания
+
+- Метрики раcсчитываются по всем 5 кейсам и усредняются.
+- `ResponseRelevancy` использует embeddings; остальные метрики — только LLM.
+- При значениях `nan` в результатах проверьте, что модели скачаны и `ollama serve` запущен.

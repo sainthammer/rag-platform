@@ -1,3 +1,9 @@
+"""Настройка OpenTelemetry tracing и инструментация FastAPI.
+
+Экспортирует трейсы через OTLP gRPC в коллектор (Jaeger, Tempo и т.д.).
+Endpoint задаётся через переменную окружения `OTEL_EXPORTER_OTLP_ENDPOINT`.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -7,8 +13,6 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-from config import settings
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -23,6 +27,8 @@ def setup_tracing(service_name: str = "rag-platform") -> TracerProvider:
 
     Возвращает установленный `TracerProvider`.
     """
+
+    from config import settings
 
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
