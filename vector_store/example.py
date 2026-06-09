@@ -4,6 +4,7 @@
 
 from vector_store.adapters import ChromaDB, HybridVectorStore, QdrantDB
 from vector_store.ports import VectorDB
+from vector_store.store_dataclasses import MetadataFilter
 from vector_store.utils import reciprocal_rank_fusion
 
 EMBEDDINGS = [
@@ -13,11 +14,36 @@ EMBEDDINGS = [
 ]
 IDS = ["cat", "dog", "bird"]
 DOCS = ["Кошка мяукает", "Собака лает", "Птица поёт"]
-METAS = [{"animal": "cat"}, {"animal": "dog"}, {"animal": "bird"}]
+METAS = [
+    {
+        "animal": "cat",
+        "language": "ru",
+        "page_num": 1,
+        "source_file": "docs/cats.pdf",
+        "section": "введение",
+    },
+    {
+        "animal": "dog",
+        "language": "ru",
+        "page_num": 2,
+        "source_file": "docs/dogs.pdf",
+        "section": "глава 1",
+    },
+    {
+        "animal": "bird",
+        "language": "en",
+        "page_num": 1,
+        "source_file": "docs/birds.pdf",
+        "section": "введение",
+    },
+]
 QUERY_VEC = [0.15, 0.25, 0.35, 0.45]
 
 
 def run(db: VectorDB, label: str):
+    """
+    Базовый CRUD функционал
+    """
     print(f"\n{'─' * 40}")
     print(f"  {label}")
     print(f"{'─' * 40}")
@@ -34,9 +60,63 @@ def run(db: VectorDB, label: str):
     print(f"delete('cat', 'bird') → count = {db.count()}")
 
 
-def run_rrf():
+def run_filters(db: ChromaDB, label: str):
+    """
+    Поиск с использованием MetadataFilter
+    1 - по одному фильтру
+    2 - по нескольким фильтрам
+    3 - фильтр через $and
+    """
     print(f"\n{'─' * 40}")
-    print(f"RRF")
+    print(f"  {label} / MetadataFilter")
+    print(f"{'─' * 40}")
+
+    db.add(IDS, EMBEDDINGS, DOCS, METAS)
+    print(f"add() count = {db.count()}")
+
+    result = db.search(
+        QUERY_VEC,
+        n_results=3,
+        filters=[
+            MetadataFilter("language", "eq", "ru"),
+        ],
+    )
+    print("filter language=ru:")
+    for i, (id_, doc) in enumerate(zip(result.ids, result.documents)):
+        print(f"  [{i + 1}] id={id_!r:8}  doc={doc!r}")
+
+    result = db.search(
+        QUERY_VEC,
+        n_results=3,
+        filters=[
+            MetadataFilter("language", "eq", "ru"),
+            MetadataFilter("page_num", "gte", 2),
+            MetadataFilter("source_file", "eq", "docs/dogs.pdf"),
+        ],
+    )
+    print("filter language=ru AND page_num>=2 AND source_file=docs/dogs.pdf:")
+    for i, (id_, doc) in enumerate(zip(result.ids, result.documents)):
+        print(f"  [{i + 1}] id={id_!r:8}  doc={doc!r}")
+
+    result = db.search(
+        QUERY_VEC,
+        n_results=3,
+        filters=[
+            MetadataFilter("section", "in", ["введение", "глава 1"]),
+        ],
+    )
+    print("filter section in [введение, глава 1]:")
+    for i, (id_, doc) in enumerate(zip(result.ids, result.documents)):
+        print(f"  [{i + 1}] id={id_!r:8}  doc={doc!r}")
+
+
+def run_rrf():
+    """
+    Пример reciprocal_rank_fusion usage
+    """
+
+    print(f"\n{'─' * 40}")
+    print("  RRF")
     print(f"{'─' * 40}")
 
     fused = reciprocal_rank_fusion([["b", "a", "c"], ["b", "a", "d"]])
@@ -58,8 +138,11 @@ def run_rrf():
 
 
 def run_hybrid():
+    """
+    Пример использования гибридной реализации для полнотекстового и семантического поиска
+    """
     print(f"\n{'─' * 40}")
-    print(f"  HybridVectorStore")
+    print("  HybridVectorStore")
     print(f"{'─' * 40}")
 
     ids = ["doc-1", "doc-2", "doc-3"]
@@ -68,7 +151,6 @@ def run_hybrid():
         "питон это язык программирования",
         "qdrant хранит векторы",
     ]
-
     embeddings = [
         [1.0, 0, 0, 0, 0, 0, 0, 0],
         [0, 1.0, 0, 0, 0, 0, 0, 0],
@@ -102,6 +184,8 @@ def run_hybrid():
 if __name__ == "__main__":
     run(ChromaDB("test_col", persist_directory="./chroma_test"), "ChromaDB")
     run(QdrantDB("test_collection", vector_size=4, in_memory=True), "QdrantDB")
+    run_filters(ChromaDB("test_filters", persist_directory="./chroma_filters"), "ChromaDB")
     run_rrf()
     run_hybrid()
+
     print("\nDONE!\n")
