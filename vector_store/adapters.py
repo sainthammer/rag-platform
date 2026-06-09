@@ -3,7 +3,7 @@
 """
 
 from vector_store.ports import VectorDB
-from vector_store.store_dataclasses import SearchResult
+from vector_store.store_dataclasses import SearchResult, combine_filters
 from vector_store.utils import reciprocal_rank_fusion, to_uuid
 
 # ----------------- ChromaDB -----------------
@@ -55,7 +55,7 @@ class ChromaDB(VectorDB):
             metadatas=metadatas,
         )
 
-    def search(self, query_embedding, n_results=3) -> SearchResult:
+    def search(self, query_embedding, n_results=3, filters=None) -> SearchResult:
         """
         Функция поиска по коллекции
 
@@ -67,6 +67,7 @@ class ChromaDB(VectorDB):
         raw = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
+            where=combine_filters(filters) if filters else None,
             include=["documents", "metadatas", "distances"],
         )
         return SearchResult(
