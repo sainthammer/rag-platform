@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .adapters import OpenAIEmbeddingService, SentenceTransformersService
+from .adapters import OllamaEmbeddingService, OpenAIEmbeddingService, SentenceTransformersService
 from .cache import EmbeddingCache, cached
 from .ports import EmbeddingService
 
@@ -116,6 +116,12 @@ def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
     elif s.embedding_provider == "sentence-transformers":
         base = SentenceTransformersService(
             model_name=s.embedding_model,
+            normalize=s.embedding_normalize,
+        )
+    elif s.embedding_provider == "ollama":
+        base = OllamaEmbeddingService(
+            model=s.embedding_model,
+            base_url=s.ollama_base_url,
             normalize=s.embedding_normalize,
         )
     else:

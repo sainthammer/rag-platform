@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Embeddings
     # ------------------------------------------------------------------
 
-    embedding_provider: Literal["openai", "sentence-transformers"] = Field(
+    embedding_provider: Literal["openai", "sentence-transformers", "ollama"] = Field(
         default="sentence-transformers", alias="EMBEDDING_PROVIDER"
     )
     embedding_model: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL")
@@ -158,10 +158,10 @@ def build_vector_db(s: "Settings | None" = None, collection: str | None = None) 
     col = collection or s.default_collection
 
     if s.vector_store_backend == "qdrant":
-        from vector_store.adapters import QdrantDB
+        from vector_store.adapters import QdrantVectorStore
 
         parsed = urlparse(s.qdrant_url)
-        return QdrantDB(
+        return QdrantVectorStore(
             collection=col,
             vector_size=s.embedding_dimension,
             host=parsed.hostname or "localhost",
