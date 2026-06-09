@@ -236,6 +236,52 @@ class FakeEmbeddingService(EmbeddingService):
         return values
 
 
+class OllamaEmbeddingService(EmbeddingService):
+    """Сервис эмбеддингов через Ollama OpenAI-совместимый API.
+
+    Ollama предоставляет endpoint ``/v1/embeddings`` — тот же интерфейс,
+    что и OpenAI, поэтому используем ``openai.OpenAI`` с переопределённым
+    ``base_url``. Хорошо работает с ``nomic-embed-text`` (768 dim) и
+    ``mxbai-embed-large`` (1024 dim).
+
+    Args:
+        model: Имя embedding-модели в Ollama (например, ``nomic-embed-text``).
+        base_url: URL Ollama-сервера.
+        normalize: Нужно ли применять L2-нормализацию.
+    """
+
+    def __init__(
+        self,
+        model: str = "nomic-embed-text",
+        base_url: str = "http://localhost:11434/v1",
+        normalize: bool = True,
+    ) -> None:
+        from openai import OpenAI
+
+        self.model = model
+        self.normalize = normalize
+        self._dim: int | None = None
+        self.client = OpenAI(base_url=base_url, api_key="ollama")
+
+    def embed(self, text: str) -> list[float]:
+        return self.embed_batch([text])[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        response = self.client.embeddings.create(model=self.model, input=texts)
+        vectors = [item.embedding for item in response.data]
+        if self._dim is None and vectors:
+            self._dim = len(vectors[0])
+        return normalize_batch(vectors) if self.normalize else vectors
+
+    def dimension(self) -> int:
+        if self._dim is not None:
+            return self._dim
+        self._dim = len(self.embed("размерность"))
+        return self._dim
+
+
 def _batched(items: list[str], size: int) -> Iterable[list[str]]:
     """Разбить список строк на батчи указанного размера.
 

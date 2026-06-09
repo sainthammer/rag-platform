@@ -17,10 +17,23 @@
 - [Запуск](#запуск)
 - [Тесты](#тесты)
 - [Стек](#стек)
+- [Hybrid Vector Search (BM25 + Qdrant + RRF)](#hybrid-vector-search-bm25--qdrant--rrf)
 
 ---
 
 ## Что было реализовано
+
+### Hybrid Vector Search — BM25 + Qdrant + RRF
+
+| Что добавлено | Файл | Описание |
+|---|---|---|
+| `BM25SparseVectorizer` | `vector_store/bm25.py` | Разреженный BM25-векторизатор: fit по корпусу, transform → `SparseVector`, поддержка кириллицы |
+| `QdrantVectorStore` | `vector_store/adapters.py` | Реализация `VectorDB` поверх Qdrant: dense + sparse именованные векторы, auto-fit BM25 |
+| `HybridVectorStore` | `vector_store/adapters.py` | RRF-fusion dense + BM25 sparse через `hybrid_search()` |
+| `OllamaEmbeddingService` | `embeddings/adapters.py` | Embedding через Ollama `/v1/embeddings` (`nomic-embed-text`, 768 dim) |
+| `reindex.py` | `reindex.py` | CLI: очистить коллекцию и переиндексировать документы из директории с прогресс-баром |
+| Интеграционные тесты | `tests/integration/test_chroma_qdrant.py` | 14 in-memory + 3 testcontainers-теста: BM25, Chroma, Qdrant, Hybrid |
+| Демо-скрипт | `demo.py` | 6 шагов: BM25 → dense → sparse → hybrid → reindex → полный RAG с `llama3.2` |
 
 ### REST API (`api/`)
 
@@ -576,8 +589,8 @@ PYTHONPATH=. .venv/bin/python -m pytest --cov=. --cov-report=html
 |---|---|
 | API | FastAPI + Uvicorn |
 | Аутентификация | python-jose (X-API-Key + JWT) |
-| Vector Store | ChromaDB / Qdrant |
-| Embeddings | OpenAI / SentenceTransformers / кэш SQLite |
+| Vector Store | ChromaDB / Qdrant (dense + sparse + hybrid RRF) |
+| Embeddings | OpenAI / SentenceTransformers / Ollama / кэш SQLite |
 | Chunking | langchain-text-splitters |
 | LLM | OpenAI / Anthropic / Ollama |
 | MCP | mcp SDK (stdio + Streamable HTTP) |
@@ -586,3 +599,144 @@ PYTHONPATH=. .venv/bin/python -m pytest --cov=. --cov-report=html
 | Метрики | Prometheus + Grafana |
 | Конфигурация | pydantic-settings |
 | Тесты | pytest + pytest-asyncio + httpx |
+
+---
+
+## Hybrid Vector Search (BM25 + Qdrant + RRF)
+
+### Что добавлено
+
+#### `vector_store/bm25.py` (новый)
+
+BM25-векторизатор для разреженного индекса Qdrant.
+
+| Класс | Описание |
+|---|---|
+| `SparseVector` | Разреженный вектор: параллельные массивы `indices` + `values` |
+| `BM25SparseVectorizer` | Fit по корпусу → `transform(text)` → `SparseVector` с BM25-весами |
+
+Формула IDF: `log((N − df + 0.5) / (df + 0.5) + 1)`. Параметры: `k1=1.5`, `b=0.75`.
+Токенизатор поддерживает латиницу, кириллицу и цифры.
+
+```python
+from vector_store.bm25 import BM25SparseVectorizer
+
+v = BM25SparseVectorizer()
+v.fit(corpus)
+sv = v.transform("BM25 ранжирование термин")
+# sv.indices, sv.values — готово для Qdrant sparse vector
+```
+
+#### `vector_store/adapters.py` — новые классы
+
+**`QdrantVectorStore(VectorDB)`** — реализует тот же ABC, что и `ChromaDB`:
+
+- Именованные вектора Qdrant: `dense` (cosine) + `sparse` (BM25).
+- `add()` — авто-fit BM25 при первом вызове, upsert с обоими векторами.
+- `search()` — dense cosine-поиск (совместим с `VectorDB`).
+- `sparse_search(query_text)` — BM25 keyword-поиск.
+- `in_memory=True` — режим без внешнего сервиса (для тестов).
+
+**`HybridVectorStore(QdrantVectorStore)`**:
+
+- `hybrid_search(query_text, query_embedding, n_results, rrf_k=60)` — RRF-fusion dense + sparse.
+- RRF: `score(d) = Σ 1 / (k + rank)`, 1-based ranks, `k=60`.
+
+```python
+from vector_store import HybridVectorStore, BM25SparseVectorizer
+
+vectorizer = BM25SparseVectorizer().fit(corpus)
+store = HybridVectorStore("my_col", vector_size=768, vectorizer=vectorizer,
+                          host="localhost", port=6333)
+store.add(ids, embeddings, documents, metadatas)
+
+res = store.hybrid_search("ранжирование термин", query_embedding, n_results=5)
+```
+
+#### `embeddings/adapters.py` — `OllamaEmbeddingService` (новый)
+
+Embedding-сервис через Ollama OpenAI-совместимый API (`/v1/embeddings`).
+Рекомендуемая модель: `nomic-embed-text` (768 dim, поддерживает русский язык).
+
+```python
+from embeddings.adapters import OllamaEmbeddingService
+
+svc = OllamaEmbeddingService(model="nomic-embed-text",
+                             base_url="http://localhost:11434/v1")
+vec = svc.embed("векторная база данных")  # list[float], dim=768
+```
+
+#### `reindex.py` (новый) — CLI переиндексации
+
+Очищает коллекцию и переиндексирует документы из директории с прогресс-баром.
+
+```bash
+# Qdrant + Ollama embeddings
+python reindex.py ./docs \
+    --backend qdrant \
+    --collection my_docs \
+    --embedding-provider ollama \
+    --ollama-model nomic-embed-text \
+    --vector-size 768
+
+# ChromaDB + fake embeddings (dev/test)
+python reindex.py ./docs --backend chroma --collection my_docs
+```
+
+Поддерживаемые форматы: `.txt`, `.md`, `.pdf`, `.docx`, `.html`.
+Параметры `--chunk-size`, `--chunk-overlap`, `--batch-size`.
+
+#### `tests/integration/test_chroma_qdrant.py` (новый)
+
+14 in-memory тестов (без Docker) + 3 testcontainers-теста (требуют Docker).
+
+| Группа | Что тестирует |
+|---|---|
+| BM25 | fit/transform, OOV, не обученный векторизатор |
+| ChromaDB | exact-match (L2-distance < 0.1), metadata filter |
+| Qdrant in-memory | exact-match (cosine > 0.9), sparse_search, delete/count, upsert idempotency |
+| Hybrid | RRF scores descending, VectorDB совместимость |
+| testcontainers | exact-match, hybrid_search, Chroma vs Qdrant overlap через реальный Docker |
+
+```bash
+# in-memory (быстро, без Docker)
+PYTHONPATH=. pytest tests/integration/test_chroma_qdrant.py -v
+
+# с Docker (testcontainers)
+PYTHONPATH=. pytest tests/integration/test_chroma_qdrant.py -v -m integration
+```
+
+### Настройка Qdrant + Ollama
+
+```bash
+# 1. Запустить Qdrant
+docker compose up -d qdrant
+
+# 2. Установить Ollama и скачать модели
+ollama pull nomic-embed-text   # 274 MB — embedding
+ollama pull llama3.2           # LLM для генерации ответов
+
+# 3. Конфиг .env
+VECTOR_STORE_BACKEND=qdrant
+QDRANT_URL=http://localhost:6333
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSION=768
+```
+
+### Демо-скрипт (`demo.py`)
+
+Интерактивное демо всего функционала с реальными сервисами (Ollama + Qdrant).
+
+```bash
+.venv/bin/python demo.py            # все 6 шагов
+.venv/bin/python demo.py --step 2   # конкретный шаг
+```
+
+| Шаг | Что демонстрирует |
+|---|---|
+| 1 | BM25SparseVectorizer: токенизация, IDF-веса, sparse-вектора |
+| 2 | Dense-поиск ChromaDB vs Qdrant с `nomic-embed-text` — правильная семантика русских запросов |
+| 3 | Sparse BM25 vs Dense: keyword-запросы выигрывают у sparse |
+| 4 | HybridVectorStore RRF: dense + BM25 через Qdrant Docker |
+| 5 | `reindex.py`: очистка + переиндексация с Ollama embeddings |
+| 6 | Полный RAG-пайплайн: ingest → hybrid search → `llama3.2` генерирует ответ |
