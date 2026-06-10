@@ -12,6 +12,7 @@
 - L2-нормализация по флагу `normalize`;
 - SQLite-кэш с ключом `sha256(text + model_name)`;
 - `CachedEmbeddingService` для прозрачного кэширования;
+- отдельные фабрики для query embeddings и document chunk embeddings;
 - `FakeEmbeddingService` для unit-тестов без внешних сервисов.
 
 ---
@@ -23,7 +24,7 @@ embeddings/
 ├── ports.py      # Абстрактный интерфейс EmbeddingService
 ├── adapters.py   # OpenAI, SentenceTransformers и Fake реализации
 ├── cache.py      # SQLite-кэш и декоратор @cached
-├── service.py    # CachedEmbeddingService и фабрика build_embedding_service()
+├── service.py    # CachedEmbeddingService и фабрики embedding-сервисов
 ├── utils.py      # L2-нормализация и вспомогательные функции
 ├── __init__.py   # re-export публичного API модуля
 └── README.md
@@ -42,9 +43,19 @@ from embeddings import (
     SentenceTransformersService,
     CachedEmbeddingService,
     EmbeddingCache,
-    build_embedding_service,
+    build_base_embedding_service,
+    build_query_embedding_service,
+    build_document_embedding_service,
 )
 ```
+
+Фабрики разделены по сценариям:
+
+- `build_base_embedding_service()` — базовый провайдер без SQLite-кэша;
+- `build_query_embedding_service()` — сервис для пользовательских запросов,
+  использует SQLite-кэш при `EMBEDDING_CACHE_ENABLED=true`;
+- `build_document_embedding_service()` — сервис для чанков документов,
+  всегда возвращает базовый провайдер без SQLite-кэша.
 
 ---
 
@@ -94,6 +105,11 @@ sha256(text + model_name)
 Это означает, что один и тот же текст для разных моделей будет сохранён разными записями.
 Такой формат безопасен при смене embedding-модели или размерности коллекции.
 
+Кэш используется только в query path через `build_query_embedding_service()`.
+Для чанков документов используйте `build_document_embedding_service()`: их
+embedding-и должны сохраняться в vector store вместе с id, документами и
+метаданными.
+
 ---
 
 ## Тесты
@@ -132,18 +148,22 @@ python -m ruff check embeddings tests/unit/test_embeddings.py tests/unit/test_em
 ## Пример использования
 
 ```python
-from embeddings import build_embedding_service
+from embeddings import build_document_embedding_service, build_query_embedding_service
 
-service = build_embedding_service()
+query_service = build_query_embedding_service()
+document_service = build_document_embedding_service()
 
-query_vector = service.embed("Что такое RAG?")
-document_vectors = service.embed_batch([
+query_vector = query_service.embed("Что такое RAG?")
+document_vectors = document_service.embed_batch([
     "RAG объединяет поиск и генерацию.",
     "Vector store хранит embedding-векторы чанков.",
 ])
 ```
 
-Локальная smoke-проверка без внешних сервисов. Это то же самое, что режим `fake`:
+Локальная smoke-проверка без внешних сервисов. Пример использует отдельные
+query/document сервисы: query-вектор строится через SQLite-кэш, а векторы
+чанков документов — через сервис без SQLite-кэша. По умолчанию это то же
+самое, что режим `fake`:
 
 ```bash
 python -m embeddings.example
@@ -159,19 +179,21 @@ python -m embeddings.example sentence-transformers
 
 Что проверяет пример:
 
-- `fake` — контракт сервиса, batch-вызов, L2-нормализацию и SQLite-кэш без сети;
+- `fake` — контракт сервиса, batch-вызов, L2-нормализацию, cache hit для query
+  и document path без SQLite-кэша;
 - `openai` — реальный вызов OpenAI Embeddings API, требует `OPENAI_API_KEY`;
 - `sentence-transformers` — локальную модель, например `BAAI/bge-m3`.
 
 В выводе примера есть не весь embedding-вектор, а диагностические значения:
 
-- размерность вектора;
-- L2-норма первого вектора;
-- первые 8 координат первого вектора;
-- cosine similarity между текстами.
+- размерность query- и document-векторов;
+- L2-норма query-вектора;
+- первые 8 координат query-вектора;
+- cosine similarity между query и чанками;
+- вызовы fake-сервисов для проверки cache hit и document path без кэша.
 
 Полный embedding обычно не выводится: для `BAAI/bge-m3` это 1024 числа.
-Для проверки полезнее смотреть размерность, норму и сходство между текстами.
+Для проверки полезнее смотреть размерность, норму и сходство query с чанками.
 
 `sentence-transformers` может скачать модель при первом запуске.
 Если модель уже скачана, но HuggingFace недоступен, можно запустить в офлайн-режиме:

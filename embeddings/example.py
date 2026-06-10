@@ -12,18 +12,19 @@
 
 import argparse
 
-from config import settings
-from embeddings.adapters import (
-    FakeEmbeddingService,
-    OpenAIEmbeddingService,
-    SentenceTransformersService,
-)
+from config import Settings
+from embeddings.adapters import FakeEmbeddingService
 from embeddings.cache import EmbeddingCache
 from embeddings.ports import EmbeddingService
-from embeddings.service import CachedEmbeddingService
+from embeddings.service import (
+    CachedEmbeddingService,
+    build_document_embedding_service,
+    build_query_embedding_service,
+)
 from embeddings.utils import cosine_similarity, l2_norm
 
-TEXTS = [
+QUERY_TEXT = "Что такое RAG?"
+DOCUMENT_TEXTS = [
     "RAG объединяет поиск по документам и генерацию ответа.",
     "Vector store хранит embedding-векторы текстовых чанков.",
     "Кэш эмбеддингов снижает число повторных вызовов модели.",
@@ -33,30 +34,40 @@ TEXTS = [
 def main() -> None:
     """Запустить пример embedding-сервиса на нескольких текстах."""
     args = parse_args()
-    base, model_name = build_base_service(args.provider)
-    cache = EmbeddingCache(args.cache_path)
-    service = CachedEmbeddingService(base=base, cache=cache, model_name=model_name)
+    query_service, document_service, model_name, fake_bases = build_example_services(
+        provider=args.provider,
+        cache_path=args.cache_path,
+    )
 
-    vectors = service.embed_batch(TEXTS)
-    assert len(vectors) == len(TEXTS)
-    assert all(len(vector) == service.dimension() for vector in vectors)
+    query_vector = query_service.embed(QUERY_TEXT)
+    document_vectors = document_service.embed_batch(DOCUMENT_TEXTS)
+    assert len(document_vectors) == len(DOCUMENT_TEXTS)
+    assert len(query_vector) == query_service.dimension()
+    assert all(len(vector) == document_service.dimension() for vector in document_vectors)
 
-    repeated_first = service.embed(TEXTS[0])
-    assert repeated_first == vectors[0]
+    repeated_query = query_service.embed(QUERY_TEXT)
+    assert repeated_query == query_vector
 
     print("Пример embeddings прошёл успешно")
     print(f"Провайдер: {args.provider}")
     print(f"Модель: {model_name}")
-    print(f"Количество текстов: {len(TEXTS)}")
-    print(f"Размерность вектора: {service.dimension()}")
-    print(f"L2-норма первого вектора: {l2_norm(vectors[0]):.6f}")
-    print(f"Первые 8 координат первого вектора: {format_vector_head(vectors[0])}")
-    print(f"Сходство текста 1 и 2: {cosine_similarity(vectors[0], vectors[1]):.6f}")
-    print(f"Сходство текста 1 и 3: {cosine_similarity(vectors[0], vectors[2]):.6f}")
-    print(f"Путь к SQLite-кэшу: {args.cache_path}")
+    print(f"Количество чанков: {len(DOCUMENT_TEXTS)}")
+    print(f"Размерность query-вектора: {query_service.dimension()}")
+    print(f"Размерность document-вектора: {document_service.dimension()}")
+    print(f"L2-норма query-вектора: {l2_norm(query_vector):.6f}")
+    print(f"Первые 8 координат query-вектора: {format_vector_head(query_vector)}")
+    print(
+        "Сходство query и чанка 1: "
+        f"{cosine_similarity(query_vector, document_vectors[0]):.6f}"
+    )
+    print(
+        "Сходство query и чанка 2: "
+        f"{cosine_similarity(query_vector, document_vectors[1]):.6f}"
+    )
+    print(f"Путь к SQLite-кэшу query-сервиса: {args.cache_path}")
 
-    if isinstance(base, FakeEmbeddingService):
-        print(f"Вызовы базового сервиса: {base.calls}")
+    for name, service in fake_bases:
+        print(f"Вызовы fake-сервиса ({name}): {service.calls}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,29 +88,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_base_service(provider: str) -> tuple[EmbeddingService, str]:
-    """Создать базовый embedding-сервис для выбранного провайдера."""
+def build_example_services(
+    provider: str,
+    cache_path: str,
+) -> tuple[EmbeddingService, EmbeddingService, str, list[tuple[str, FakeEmbeddingService]]]:
+    """Создать query/document embedding-сервисы для примера.
+
+    Args:
+        provider: Имя провайдера из аргументов CLI.
+        cache_path: Путь к SQLite-кэшу query-сервиса.
+
+    Returns:
+        Query-сервис, document-сервис, имя модели и fake-сервисы для диагностики.
+    """
     if provider == "fake":
         model_name = "fake-model"
-        return FakeEmbeddingService(size=8, model_name=model_name, normalize=True), model_name
-
-    if provider == "openai":
+        query_base = FakeEmbeddingService(size=8, model_name=model_name, normalize=True)
+        document_base = FakeEmbeddingService(size=8, model_name=model_name, normalize=True)
+        query_service = CachedEmbeddingService(
+            base=query_base,
+            cache=EmbeddingCache(cache_path),
+            model_name=model_name,
+        )
         return (
-            OpenAIEmbeddingService(
-                model=settings.embedding_model,
-                api_key=settings.openai_api_key or None,
-                normalize=settings.embedding_normalize,
-            ),
-            settings.embedding_model,
+            query_service,
+            document_base,
+            model_name,
+            [("query", query_base), ("document", document_base)],
         )
 
-    model_name = settings.embedding_model
+    example_settings = Settings(
+        EMBEDDING_PROVIDER=provider,
+        EMBEDDING_CACHE_PATH=cache_path,
+    )
     return (
-        SentenceTransformersService(
-            model_name=model_name,
-            normalize=settings.embedding_normalize,
-        ),
-        model_name,
+        build_query_embedding_service(example_settings),
+        build_document_embedding_service(example_settings),
+        example_settings.embedding_model,
+        [],
     )
 
 

@@ -63,17 +63,31 @@ class CachedEmbeddingService(EmbeddingService):
         cached_vectors = self.cache.get_many(texts, self.model_name)
         result: list[list[float] | None] = list(cached_vectors)
 
-        missing_indexes = [
-            index for index, vector in enumerate(cached_vectors) if vector is None
-        ]
-        if missing_indexes:
-            missing_texts = [texts[index] for index in missing_indexes]
+        missing_indexes_by_text: dict[str, list[int]] = {}
+        missing_texts: list[str] = []
+        for index, vector in enumerate(cached_vectors):
+            if vector is not None:
+                continue
+
+            text = texts[index]
+            if text not in missing_indexes_by_text:
+                missing_indexes_by_text[text] = []
+                missing_texts.append(text)
+            missing_indexes_by_text[text].append(index)
+
+        if missing_texts:
             missing_vectors = self.base.embed_batch(missing_texts)
             self.cache.set_many(missing_texts, self.model_name, missing_vectors)
-            for index, vector in zip(missing_indexes, missing_vectors, strict=True):
-                result[index] = vector
+            for text, vector in zip(missing_texts, missing_vectors, strict=True):
+                for index in missing_indexes_by_text[text]:
+                    result[index] = vector
 
-        return [vector for vector in result if vector is not None]
+        completed: list[list[float]] = []
+        for vector in result:
+            if vector is None:
+                raise RuntimeError("Не удалось заполнить embedding-вектор после cache miss")
+            completed.append(vector)
+        return completed
 
     def dimension(self) -> int:
         """Вернуть размерность базового embedding-сервиса.
@@ -84,17 +98,19 @@ class CachedEmbeddingService(EmbeddingService):
         return self.base.dimension()
 
 
-def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
-    """Создать embedding-сервис по настройкам приложения.
+def build_base_embedding_service(s: Settings | None = None) -> EmbeddingService:
+    """Создать базовый embedding-сервис без SQLite-кэша.
 
-    Фабрика читает ``EMBEDDING_PROVIDER``, ``EMBEDDING_MODEL`` и параметры
-    кэша. Возвращает либо провайдер, либо ``CachedEmbeddingService``.
+    Фабрика читает настройки embedding-провайдера, модели и нормализации.
+    Результат можно использовать напрямую для чанков документов или обернуть
+    в ``CachedEmbeddingService`` для пользовательских запросов.
 
     Args:
-        s: Настройки приложения. Если ``None``, используется глобальный ``settings``.
+        s: Настройки приложения. Если ``None``, используется глобальный
+            объект ``settings`` из ``config.py``.
 
     Returns:
-        Готовый embedding-сервис.
+        Базовый embedding-провайдер без ``CachedEmbeddingService``.
 
     Raises:
         ValueError: Если указан неизвестный embedding-провайдер.
@@ -105,18 +121,45 @@ def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
         s = settings
 
     if s.embedding_provider == "openai":
-        base: EmbeddingService = OpenAIEmbeddingService(
+        return OpenAIEmbeddingService(
             model=s.embedding_model,
             api_key=s.openai_api_key or None,
             normalize=s.embedding_normalize,
         )
-    elif s.embedding_provider == "sentence-transformers":
-        base = SentenceTransformersService(
+    if s.embedding_provider == "sentence-transformers":
+        return SentenceTransformersService(
             model_name=s.embedding_model,
             normalize=s.embedding_normalize,
         )
-    else:
-        raise ValueError(f"Неизвестный эмбеддинг провайдер: {s.embedding_provider!r}")
+
+    raise ValueError(f"Неизвестный embedding-провайдер: {s.embedding_provider!r}")
+
+
+def build_query_embedding_service(s: Settings | None = None) -> EmbeddingService:
+    """Создать embedding-сервис для пользовательских запросов.
+
+    Фабрика читает настройки embedding-провайдера и, если включен
+    ``EMBEDDING_CACHE_ENABLED``, оборачивает базовый провайдер в
+    ``CachedEmbeddingService``. Этот путь предназначен для query embeddings,
+    где повторные запросы пользователя имеет смысл переиспользовать из кэша.
+
+    Args:
+        s: Настройки приложения. Если ``None``, используется глобальный
+            объект ``settings`` из ``config.py``.
+
+    Returns:
+        Готовый embedding-сервис для пользовательских запросов. При включенном
+        кэше возвращает ``CachedEmbeddingService``, иначе базовый провайдер.
+
+    Raises:
+        ValueError: Если указан неизвестный embedding-провайдер.
+    """
+    if s is None:
+        from config import settings
+
+        s = settings
+
+    base = build_base_embedding_service(s)
 
     if not s.embedding_cache_enabled:
         return base
@@ -126,3 +169,23 @@ def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
         cache=EmbeddingCache(s.embedding_cache_path),
         model_name=s.embedding_model,
     )
+
+
+def build_document_embedding_service(s: Settings | None = None) -> EmbeddingService:
+    """Создать embedding-сервис для чанков документов без SQLite-кэша.
+
+    Embedding-и чанков должны сохраняться в vector store вместе с id,
+    документами и метаданными. Поэтому эта фабрика всегда возвращает базовый
+    embedding-провайдер и игнорирует ``EMBEDDING_CACHE_ENABLED``.
+
+    Args:
+        s: Настройки приложения. Если ``None``, используется глобальный
+            объект ``settings`` из ``config.py``.
+
+    Returns:
+        Базовый embedding-провайдер без ``CachedEmbeddingService``.
+
+    Raises:
+        ValueError: Если указан неизвестный embedding-провайдер.
+    """
+    return build_base_embedding_service(s)

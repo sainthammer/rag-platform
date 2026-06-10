@@ -69,8 +69,10 @@ cp .env.example .env
 
 ### Embeddings
 
-Модуль `embeddings/` отвечает за построение embedding-векторов, L2-нормализацию
-и SQLite-кэш. Провайдер выбирается через `.env`:
+Модуль `embeddings/` отвечает за построение embedding-векторов и
+L2-нормализацию. Для пользовательских запросов доступен SQLite-кэш; embedding-и
+чанков документов должны сохраняться в vector store, без дублирования в
+SQLite-кэше. Провайдер выбирается через `.env`:
 
 ```bash
 EMBEDDING_PROVIDER=sentence-transformers
@@ -196,8 +198,9 @@ PYTHONPATH=. .venv/bin/python vector_store/example.py
 
 ### Smoke-тест embeddings
 
-Проверка `EmbeddingService`, нормализации, batch-вызова и SQLite-кэша.
-По умолчанию используется `fake`-провайдер без внешних сервисов:
+Проверка `EmbeddingService`, нормализации, batch-вызова и разделения сервисов:
+query embeddings идут через SQLite-кэш, document chunk embeddings — без
+SQLite-кэша. По умолчанию используется `fake`-провайдер без внешних сервисов:
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m embeddings.example
@@ -223,10 +226,11 @@ HF_HUB_OFFLINE=1 PYTHONPATH=. .venv/bin/python -m embeddings.example sentence-tr
 ```
 
 Пример выводит диагностические значения embedding-модуля:
-- размерность вектора;
-- L2-норму;
-- первые 8 координат первого вектора;
-- cosine similarity между текстами.
+- размерность query- и document-векторов;
+- L2-норму query-вектора;
+- первые 8 координат query-вектора;
+- cosine similarity между query и чанками;
+- вызовы fake-сервисов для проверки cache hit и document path без кэша.
 
 Unit-тесты модуля embeddings:
 

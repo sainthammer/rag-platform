@@ -143,9 +143,9 @@ class SentenceTransformersService(EmbeddingService):
         encoded = self.model.encode(
             texts,
             normalize_embeddings=self.normalize,
-            convert_to_numpy=False,
+            convert_to_numpy=True,
         )
-        return [_as_float_list(vector) for vector in encoded]
+        return [[float(value) for value in vector] for vector in encoded.tolist()]
 
     def dimension(self) -> int:
         """Вернуть размерность текущей SentenceTransformers-модели.
@@ -253,19 +253,3 @@ def _batched(items: list[str], size: int) -> Iterable[list[str]]:
         raise ValueError("Размер батча должен быть больше ноля")
     for start in range(0, len(items), size):
         yield items[start : start + size]
-
-
-def _as_float_list(vector: object) -> list[float]:
-    """Привести array-like embedding-вектор к ``list[float]``.
-
-    Args:
-        vector: Вектор из SentenceTransformers, NumPy, Torch или обычный iterable.
-
-    Returns:
-        Обычный Python-список чисел ``float``.
-    """
-    if hasattr(vector, "tolist"):
-        return [float(value) for value in vector.tolist()]
-    if isinstance(vector, list):
-        return [float(value) for value in vector]
-    return [float(value) for value in vector]  # type: ignore[union-attr]

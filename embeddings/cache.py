@@ -17,6 +17,7 @@ from typing import ParamSpec, TypeVar
 
 P = ParamSpec("P")
 T = TypeVar("T")
+SQLITE_QUERY_BATCH_SIZE = 900
 
 
 def cache_key(text: str, model_name: str) -> str:
@@ -110,7 +111,29 @@ class EmbeddingCache:
         Returns:
             Список той же длины, где отсутствующие значения представлены ``None``.
         """
-        return [self.get(text, model_name) for text in texts]
+        if not texts:
+            return []
+
+        keys = [cache_key(text, model_name) for text in texts]
+        vectors_by_key: dict[str, list[float]] = {}
+
+        with self._connect() as conn:
+            for key_batch in _batched(keys, SQLITE_QUERY_BATCH_SIZE):
+                placeholders = ", ".join("?" for _ in key_batch)
+                rows = conn.execute(
+                    f"""
+                    SELECT key, vector_json
+                    FROM embeddings
+                    WHERE key IN ({placeholders})
+                    """,
+                    key_batch,
+                ).fetchall()
+                for key, vector_json in rows:
+                    vectors_by_key[str(key)] = [
+                        float(value) for value in json.loads(vector_json)
+                    ]
+
+        return [vectors_by_key.get(key) for key in keys]
 
     def set_many(self, texts: list[str], model_name: str, vectors: list[list[float]]) -> None:
         """Сохранить батч embedding-векторов одной транзакцией.
@@ -217,3 +240,16 @@ def cached(fn: Callable[P, T]) -> Callable[P, T]:
         return vector
 
     return wrapper
+
+
+def _batched(items: list[str], size: int) -> list[list[str]]:
+    """Разбить список строк на батчи фиксированного размера.
+
+    Args:
+        items: Исходный список строк.
+        size: Максимальный размер батча.
+
+    Returns:
+        Список батчей.
+    """
+    return [items[start : start + size] for start in range(0, len(items), size)]
