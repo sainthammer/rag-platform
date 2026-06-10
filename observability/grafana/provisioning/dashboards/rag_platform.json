@@ -2,15 +2,23 @@
   "title": "RAG Platform",
   "uid": "rag-platform",
   "schemaVersion": 36,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": { "from": "now-30m", "to": "now" },
   "panels": [
+
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Overview",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }
+    },
     {
       "id": 1,
       "title": "RAG — запросов/сек",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 4 },
       "targets": [{
         "expr": "sum(rate(rag_requests_total[1m]))",
         "legendFormat": "req/s"
@@ -22,7 +30,7 @@
       "id": 2,
       "title": "RAG — процент ошибок",
       "type": "stat",
-      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 4 },
       "targets": [{
         "expr": "sum(rate(rag_requests_total{status='error'}[1m])) / sum(rate(rag_requests_total[1m])) * 100",
         "legendFormat": "error %"
@@ -47,7 +55,7 @@
       "id": 3,
       "title": "RAG — latency P50 / P95",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 4 },
       "targets": [
         { "expr": "histogram_quantile(0.50, rate(rag_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
         { "expr": "histogram_quantile(0.95, rate(rag_latency_seconds_bucket[5m]))", "legendFormat": "P95" }
@@ -59,7 +67,7 @@
       "id": 4,
       "title": "RAG — всего запросов",
       "type": "stat",
-      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
       "targets": [{ "expr": "sum(rag_requests_total)", "legendFormat": "total" }],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
       "fieldConfig": { "defaults": { "unit": "short" } }
@@ -68,7 +76,7 @@
       "id": 5,
       "title": "RAG — запросов/сек по статусу",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
       "targets": [{
         "expr": "sum by (status) (rate(rag_requests_total[1m]))",
         "legendFormat": "{{status}}"
@@ -79,7 +87,7 @@
       "id": 6,
       "title": "RAG — распределение latency",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
       "targets": [
         { "expr": "histogram_quantile(0.50, rate(rag_latency_seconds_bucket[5m]))", "legendFormat": "P50" },
         { "expr": "histogram_quantile(0.95, rate(rag_latency_seconds_bucket[5m]))", "legendFormat": "P95" },
@@ -87,11 +95,101 @@
       ],
       "fieldConfig": { "defaults": { "unit": "s" } }
     },
+
+    {
+      "id": 101,
+      "type": "row",
+      "title": "RAG Quality",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 1 }
+    },
+    {
+      "id": 9,
+      "title": "Retrieval — чанков на запрос (среднее)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "targets": [{
+        "expr": "rate(retrieval_chunk_count_sum[5m]) / rate(retrieval_chunk_count_count[5m])",
+        "legendFormat": "avg chunks"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 1 } }
+    },
+    {
+      "id": 11,
+      "title": "Retrieval — распределение числа чанков",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(retrieval_chunk_count_bucket[5m]))", "legendFormat": "P50 chunks" },
+        { "expr": "histogram_quantile(0.90, rate(retrieval_chunk_count_bucket[5m]))", "legendFormat": "P90 chunks" },
+        { "expr": "histogram_quantile(0.99, rate(retrieval_chunk_count_bucket[5m]))", "legendFormat": "P99 chunks" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } }
+    },
+
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Cost Tracker",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }
+    },
+    {
+      "id": 12,
+      "title": "LLM — всего запросов по провайдеру",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 23, "w": 8, "h": 4 },
+      "targets": [{
+        "expr": "sum by (provider, model) (llm_requests_total)",
+        "legendFormat": "{{provider}}/{{model}}"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 13,
+      "title": "Embedding — всего запросов по модели",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 23, "w": 8, "h": 4 },
+      "targets": [{
+        "expr": "sum by (model) (embedding_requests_total)",
+        "legendFormat": "{{model}}"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 14,
+      "title": "LLM — ошибки по провайдеру",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 23, "w": 8, "h": 4 },
+      "targets": [{
+        "expr": "sum by (provider, model) (llm_requests_total{status='error'})",
+        "legendFormat": "{{provider}}/{{model}} ERR"
+      }],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
     {
       "id": 7,
       "title": "LLM — latency P50 / P95 по модели",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 27, "w": 12, "h": 8 },
       "targets": [
         { "expr": "histogram_quantile(0.50, sum by (le, provider, model) (rate(llm_latency_seconds_bucket[5m])))", "legendFormat": "P50 {{provider}}/{{model}}" },
         { "expr": "histogram_quantile(0.95, sum by (le, provider, model) (rate(llm_latency_seconds_bucket[5m])))", "legendFormat": "P95 {{provider}}/{{model}}" }
@@ -102,34 +200,43 @@
       "id": 8,
       "title": "Embedding — latency по модели",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 27, "w": 12, "h": 8 },
       "targets": [
         { "expr": "histogram_quantile(0.50, sum by (le, model) (rate(embedding_latency_seconds_bucket[5m])))", "legendFormat": "P50 {{model}}" },
         { "expr": "histogram_quantile(0.95, sum by (le, model) (rate(embedding_latency_seconds_bucket[5m])))", "legendFormat": "P95 {{model}}" }
       ],
       "fieldConfig": { "defaults": { "unit": "s" } }
     },
+
     {
-      "id": 9,
-      "title": "Retrieval — чанков на запрос (среднее)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
-      "targets": [{
-        "expr": "rate(retrieval_chunk_count_sum[5m]) / rate(retrieval_chunk_count_count[5m])",
-        "legendFormat": "avg chunks"
-      }],
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 1 } }
+      "id": 103,
+      "type": "row",
+      "title": "Infrastructure",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 35, "w": 24, "h": 1 }
     },
     {
       "id": 10,
       "title": "LLM — запросов/сек по провайдеру и статусу",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
       "targets": [{
         "expr": "sum by (provider, model, status) (rate(llm_requests_total[1m]))",
         "legendFormat": "{{provider}}/{{model}} {{status}}"
       }],
       "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 15,
+      "title": "Embedding — запросов/сек по модели и статусу",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "targets": [{
+        "expr": "sum by (model, status) (rate(embedding_requests_total[1m]))",
+        "legendFormat": "{{model}} {{status}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
     }
+
   ]
 }

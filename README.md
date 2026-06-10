@@ -12,6 +12,8 @@
 - [REST API](#rest-api)
 - [MCP-сервер](#mcp-сервер)
 - [Наблюдаемость](#наблюдаемость)
+- [Как читать Grafana dashboard](#как-читать-grafana-dashboard)
+- [Как интерпретировать RAGAS отчёт](#как-интерпретировать-ragas-отчёт)
 - [Установка](#установка)
 - [Конфигурация](#конфигурация)
 - [Запуск](#запуск)
@@ -416,6 +418,102 @@ instrument_fastapi(app)         # авто-инструментация FastAPI
 ```bash
 docker-compose up --build
 docker compose exec ollama ollama pull llama3.2
+```
+
+---
+
+## Как читать Grafana dashboard
+
+Дашборд `RAG Platform` (http://localhost:3000, `admin/admin`) загружается автоматически через provisioning. Он разбит на **4 секции**:
+
+| Секция | Что показывает |
+|---|---|
+| **Overview** | Ключевые KPI: RPS, процент ошибок, latency P50/P95, общее число запросов + временны́е ряды |
+| **RAG Quality** | Качество retrieval: среднее число чанков на запрос, распределение по перцентилям |
+| **Cost Tracker** | Нагрузка на LLM и Embedding: кол-во запросов по провайдерам и их latency |
+| **Infrastructure** | Детальный мониторинг компонентов по провайдеру/модели/статусу |
+
+### Ключевые пороги и сигналы
+
+**Overview**
+
+- `RAG — процент ошибок` — зелёный < 5 %, жёлтый 5–20 %, красный > 20 %.
+- `RAG — latency P95` — типичные значения: Ollama llama3.2 ≈ 1–5 сек, OpenAI gpt-4o-mini < 1 сек.
+
+**RAG Quality**
+
+- `Чанков на запрос (среднее)` — норма 3–5. Значение < 2 сигнализирует о разреженной базе; > 8 — контекст будет обрезан `TokenBudgetManager`.
+- `Распределение числа чанков (P99)` — «худший случай» retrieval; используйте для выбора `n_results`.
+
+**Cost Tracker**
+
+- `LLM — ошибки по провайдеру` — цветовая индикация: зелёный 0, жёлтый ≥ 1, красный ≥ 10.
+- `Embedding latency P95` — SentenceTransformers ≈ 50–200 мс; OpenAI < 200 мс.
+
+### Фильтры времени
+
+Диапазон выбирается в правом верхнем углу:
+- `Last 5 minutes` — при отладке в реальном времени.
+- `Last 30 minutes` — стандартный мониторинг (default).
+- `Last 6 hours` — анализ тренда нагрузки.
+
+---
+
+## Как интерпретировать RAGAS отчёт
+
+Отчёт создаётся командой `python evaluation/eval_runner.py` или через `POST /v1/eval/run`.  
+Выходной файл: `eval_report.html` (открывается в браузере).
+
+### Метрики RAGAS
+
+| Метрика | Что измеряет | Хорошо | Плохо |
+|---|---|---|---|
+| **Faithfulness** | Ответ не придумывает факты, которых нет в retrieved-чанках | ≥ 0.8 | < 0.5 → модель галлюцинирует |
+| **Answer Relevancy** | Ответ отвечает именно на поставленный вопрос | ≥ 0.7 | < 0.4 → ответ уходит в сторону |
+| **Context Precision** | Доля retrieved чанков, реально нужных для ответа | ≥ 0.6 | < 0.4 → retrieval «шумит» |
+| **Context Recall** | Доля нужных фактов, найденных в retrieved чанках | ≥ 0.6 | < 0.4 → retrieval не находит документы |
+
+### Цветовые коды
+
+| Цвет полосы | Значение | Диапазон |
+|---|---|---|
+| Зелёный | Хорошо | score ≥ 0.7 |
+| Жёлтый | Допустимо | 0.4 ≤ score < 0.7 |
+| Красный | Требует внимания | score < 0.4 |
+
+### Секция «Тест на галлюцинации»
+
+Проверяет **negative-кейсы** — вопросы, ответов на которые нет в базе знаний (например: «Какой встроенный модуль Python даёт доступ к GPU через CUDA?»).
+
+- **PASS** — модель ответила «не нашёл информации» / «недостаточно данных». Правильное поведение.
+- **FAIL** — модель придумала ответ. В mock-режиме FAIL ожидаем; в Ollama-режиме с шаблоном `STRICT` должен быть PASS.
+
+### Диагностика по результатам
+
+| Наблюдение | Возможная причина | Что проверить |
+|---|---|---|
+| Faithfulness < 0.5 | Модель игнорирует контекст | Шаблон промпта (`STRICT`), температура LLM |
+| Context Recall < 0.4 | Retrieval не находит нужные чанки | `chunk_size`, модель embeddings, `n_results` |
+| Context Precision < 0.4 | Retrieval тянет нерелевантные чанки | `score_threshold`, уменьшить `n_results` |
+| Все метрики N/A | Запуск в mock-режиме | Используйте `--mode ollama` для реальных баллов |
+
+### Запуск оценки
+
+```bash
+# Offline, без внешних сервисов (mock LLM — RAGAS не считается)
+python evaluation/eval_runner.py
+
+# Ollama + RAGAS (требует ollama serve)
+python evaluation/eval_runner.py --mode ollama
+
+# Больше кейсов для RAGAS (точнее, но дольше)
+python evaluation/eval_runner.py --mode ollama --max-cases 20
+
+# Через REST API
+curl -X POST http://localhost:8080/v1/eval/run \
+     -H "X-API-Key: $API_SECRET_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"mode": "mock", "max_cases": 5, "output_path": "eval_report.html"}'
 ```
 
 ---

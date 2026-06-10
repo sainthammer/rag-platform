@@ -83,6 +83,16 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.coverage.run]
+omit = ["*/example.py", "*/examples.py", "*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise ImportError",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
