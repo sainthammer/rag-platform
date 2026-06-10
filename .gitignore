@@ -67,3 +67,4 @@ prometheus/data/
 # Distribution
 *.tar.gz
 *.zip
+chroma_test/

@@ -257,6 +257,12 @@ PYTHONPATH=. .venv/bin/python -m ruff check embeddings tests/unit/test_embedding
 docker-compose up --build
 ```
 
+После первого старта нужно скачать модель в контейнер Ollama (выполняется один раз, модель кешируется в volume):
+
+```bash
+docker compose exec ollama ollama pull llama3.2
+```
+
 ### Запуск API локально
 
 ```bash
