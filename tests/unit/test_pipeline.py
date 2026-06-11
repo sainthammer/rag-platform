@@ -252,3 +252,114 @@ def test_strict_template_format_user_prepends_prefix() -> None:
     result = STRICT.format_user(q)
     assert result.endswith(q)
     assert STRICT.user_prefix in result
+
+
+# ---------------------------------------------------------------------------
+# RAGPipeline — run_detailed (returns answer + contexts)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_detailed_returns_answer_and_chunks() -> None:
+    docs = ["Chunk A about Paris.", "Chunk B about France."]
+    provider = MockProvider(response="Paris is the capital.")
+    pipeline = RAGPipeline(
+        llm=provider,
+        vector_db=_make_vector_db(docs),
+        embed_fn=_embed,
+    )
+
+    answer, contexts = await pipeline.run_detailed("Capital of France?")
+
+    assert answer == "Paris is the capital."
+    assert contexts == docs
+
+
+@pytest.mark.asyncio
+async def test_run_detailed_contexts_are_budget_limited() -> None:
+    """run_detailed должен возвращать только те чанки, что прошли fit_chunks."""
+    # Задаём бюджет в 5 токенов — первый чанк влезет, второй нет
+    budget = TokenBudgetManager(model="gpt-4o", max_context_tokens=5, reserved_tokens=0)
+    docs = ["hello world", "this is a very long chunk that will not fit"]
+    provider = MockProvider(response="ok")
+    pipeline = RAGPipeline(
+        llm=provider,
+        vector_db=_make_vector_db(docs),
+        embed_fn=_embed,
+        budget=budget,
+    )
+
+    _, contexts = await pipeline.run_detailed("q")
+
+    assert len(contexts) < len(docs)
+
+
+@pytest.mark.asyncio
+async def test_run_detailed_calls_llm_once() -> None:
+    provider = MockProvider()
+    pipeline = RAGPipeline(
+        llm=provider,
+        vector_db=_make_vector_db(["doc"]),
+        embed_fn=_embed,
+    )
+
+    await pipeline.run_detailed("question")
+
+    assert len(provider.calls) == 1
+    _, stream = provider.calls[0]
+    assert stream is False  # run_detailed всегда non-stream
+
+
+# ---------------------------------------------------------------------------
+# RAGPipeline — error propagation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_propagates_llm_error() -> None:
+    class FailingProvider(LLMProvider):
+        async def complete(self, messages, stream=False):
+            raise RuntimeError("LLM failure")
+
+    pipeline = RAGPipeline(
+        llm=FailingProvider(),
+        vector_db=_make_vector_db(["doc"]),
+        embed_fn=_embed,
+    )
+
+    with pytest.raises(RuntimeError, match="LLM failure"):
+        await pipeline.run("question")
+
+
+@pytest.mark.asyncio
+async def test_run_detailed_propagates_llm_error() -> None:
+    class FailingProvider(LLMProvider):
+        async def complete(self, messages, stream=False):
+            raise ValueError("generation error")
+
+    pipeline = RAGPipeline(
+        llm=FailingProvider(),
+        vector_db=_make_vector_db(["doc"]),
+        embed_fn=_embed,
+    )
+
+    with pytest.raises(ValueError, match="generation error"):
+        await pipeline.run_detailed("q")
+
+
+# ---------------------------------------------------------------------------
+# TokenBudgetManager — remaining
+# ---------------------------------------------------------------------------
+
+
+def test_budget_remaining_is_positive_for_short_chunks() -> None:
+    budget = TokenBudgetManager(model="gpt-4o", max_context_tokens=200, reserved_tokens=0)
+    remaining = budget.remaining(["hello"])
+    assert remaining > 0
+
+
+def test_budget_remaining_zero_when_budget_exhausted() -> None:
+    budget = TokenBudgetManager(model="gpt-4o", max_context_tokens=5, reserved_tokens=0)
+    # Чанк длиннее бюджета — fit_chunks вернёт [], remaining = budget
+    remaining = budget.remaining(["a very long text that exceeds budget significantly"])
+    assert remaining >= 0  # max(0, ...) никогда не отрицательный

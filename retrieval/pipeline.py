@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
+
+_log = logging.getLogger("rag.pipeline")
 
 if TYPE_CHECKING:
     from config import Settings
@@ -94,6 +97,7 @@ class RAGPipeline:
         budget: TokenBudgetManager | None = None,
         score_threshold: float = 0.0,
         fallback_answer: str = FALLBACK_ANSWER,
+        cache_ttl: float = 300.0,
     ) -> None:
         self.llm = llm
         self.vector_db_factory = vector_db_factory
@@ -103,6 +107,9 @@ class RAGPipeline:
         self.budget = budget or TokenBudgetManager()
         self.score_threshold = score_threshold
         self.fallback_answer = fallback_answer
+        self._cache_ttl = cache_ttl
+        # {(question, collection): (RAGResponse, timestamp)}
+        self._cache: dict[tuple[str, str], tuple[RAGResponse, float]] = {}
 
         # Определяем имя embedding-модели из owner-объекта функции embed
         owner = getattr(embed_fn, "__self__", None)
@@ -145,6 +152,19 @@ class RAGPipeline:
         Returns:
             RAGResponse с ответом, источниками, уровнем уверенности и задержкой.
         """
+        # --- cache lookup ---------------------------------------------------
+        cache_key = (question, collection)
+        if self._cache_ttl > 0:
+            entry = self._cache.get(cache_key)
+            if entry is not None:
+                cached_response, ts = entry
+                if time.monotonic() - ts < self._cache_ttl:
+                    _log.info(
+                        "rag_cache_hit",
+                        extra={"question": question[:200], "collection": collection},
+                    )
+                    return cached_response
+
         start = time.monotonic()
 
         try:
@@ -153,15 +173,30 @@ class RAGPipeline:
 
             if not sources or confidence < self.score_threshold:
                 RAG_REQUESTS_TOTAL.labels(status="success").inc()
-                RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
-                return RAGResponse(
+                latency_ms = (time.monotonic() - start) * 1000
+                RAG_LATENCY_SECONDS.observe(latency_ms / 1000)
+                response = RAGResponse(
                     answer=self.fallback_answer,
                     sources=[],
                     confidence=confidence,
-                    latency_ms=(time.monotonic() - start) * 1000,
+                    latency_ms=latency_ms,
                 )
+                _log.info(
+                    "rag_call",
+                    extra={
+                        "question": question[:200],
+                        "collection": collection,
+                        "chunks_count": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "latency_ms": round(latency_ms, 1),
+                        "cache_hit": False,
+                    },
+                )
+                return response
 
             messages = self._build_messages(question, sources)
+            prompt_tokens = sum(self.budget.count(m.content) for m in messages)
 
             llm_start = time.monotonic()
             try:
@@ -187,14 +222,36 @@ class RAGPipeline:
                     parts.append(token)
                 answer = "".join(parts)
 
+            completion_tokens = self.budget.count(answer)
+            latency_ms = (time.monotonic() - start) * 1000
+
             RAG_REQUESTS_TOTAL.labels(status="success").inc()
-            RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
-            return RAGResponse(
+            RAG_LATENCY_SECONDS.observe(latency_ms / 1000)
+
+            response = RAGResponse(
                 answer=answer,
                 sources=sources,
                 confidence=confidence,
-                latency_ms=(time.monotonic() - start) * 1000,
+                latency_ms=latency_ms,
             )
+
+            _log.info(
+                "rag_call",
+                extra={
+                    "question": question[:200],
+                    "collection": collection,
+                    "chunks_count": len(sources),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "latency_ms": round(latency_ms, 1),
+                    "cache_hit": False,
+                },
+            )
+
+            if self._cache_ttl > 0:
+                self._cache[cache_key] = (response, time.monotonic())
+
+            return response
         except Exception:
             RAG_REQUESTS_TOTAL.labels(status="error").inc()
             RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
