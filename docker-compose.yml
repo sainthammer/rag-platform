@@ -1,73 +1,112 @@
 services:
+
+  # ── RAG Platform API ────────────────────────────────────────────────────────
   api:
     build: .
+    restart: unless-stopped
     ports:
       - "${API_PORT:-8080}:8080"
     env_file: .env
     environment:
-      # Override localhost URLs from .env with Docker service names
       - CHROMA_HOST=chroma
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     depends_on:
-      - chroma
-      - qdrant
-      - jaeger
-      - ollama
+      chroma:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      ollama:
+        condition: service_started
     volumes:
       - .:/app
-      - ${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface
+      - ${USERPROFILE:-~}/.cache/huggingface:/root/.cache/huggingface
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
+  # ── ChromaDB ────────────────────────────────────────────────────────────────
   chroma:
     image: chromadb/chroma:latest
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
       - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
+  # ── Qdrant ──────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:latest
+    restart: unless-stopped
     ports:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
+  # ── Ollama (локальный LLM + embeddings) ─────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
+    restart: unless-stopped
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
 
+  # ── Jaeger (трейсинг) ───────────────────────────────────────────────────────
   jaeger:
     image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
     environment:
       - COLLECTOR_OTLP_ENABLED=true
 
+  # ── Prometheus (метрики) ────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
+    restart: unless-stopped
     ports:
       - "9090:9090"
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
+  # ── Grafana (дашборды) ──────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest
+    restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
 
 volumes:
   chroma_data:

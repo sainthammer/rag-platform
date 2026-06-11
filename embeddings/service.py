@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .adapters import OllamaEmbeddingService, OpenAIEmbeddingService, SentenceTransformersService
+from .adapters import FakeEmbeddingService, OllamaEmbeddingService, OpenAIEmbeddingService, SentenceTransformersService
 from .cache import EmbeddingCache, cached
 from .ports import EmbeddingService
 
@@ -124,6 +124,8 @@ def build_embedding_service(s: Settings | None = None) -> EmbeddingService:
             base_url=s.ollama_base_url,
             normalize=s.embedding_normalize,
         )
+    elif s.embedding_provider == "fake":
+        base = FakeEmbeddingService(size=s.embedding_dimension)
     else:
         raise ValueError(f"Неизвестный эмбеддинг провайдер: {s.embedding_provider!r}")
 

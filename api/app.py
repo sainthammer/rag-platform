@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+from api.limiter import limiter
 from api.middleware.auth import require_auth
+from api.middleware.request_id import RequestIDMiddleware
 from api.routers import ask, collections, eval, health, ingest, metrics, search
 from config import build_embedding_service, build_llm_provider, build_vector_db, settings
 from embeddings.ports import EmbeddingService
@@ -129,7 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="RAG Platform API",
+    title="RAG Platform",
     version="0.1.0",
     description=(
         "RAG-платформа с поддержкой нескольких LLM-провайдеров и векторных хранилищ.\n\n"
@@ -160,5 +164,9 @@ app.include_router(search.router, prefix="/v1", dependencies=_auth)
 app.include_router(ask.router, prefix="/v1", dependencies=_auth)
 app.include_router(eval.router, prefix="/v1", dependencies=_auth)
 app.include_router(collections.router, prefix="/v1", dependencies=_auth)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+app.add_middleware(RequestIDMiddleware)
 
 instrument_fastapi(app)

@@ -13,10 +13,11 @@ import copy
 import json
 from typing import Annotated, AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from api.deps import get_pipeline
+from api.limiter import limiter
 from api.schemas import AskRequest, AskResponse, AskSourceItem
 from retrieval.pipeline import RAGPipeline
 
@@ -59,6 +60,11 @@ async def _sse_generator(
     "/ask",
     response_model=None,
     summary="Задать вопрос RAG-пайплайну",
+    description=(
+        "Полный RAG-цикл: embed → retrieve → generate. "
+        "Лимит: **100 запросов / минуту** с одного IP. "
+        "При `stream=true` возвращает `text/event-stream`."
+    ),
     responses={
         200: {
             "description": "JSON AskResponse (stream=false) или SSE-поток (stream=true)",
@@ -67,10 +73,13 @@ async def _sse_generator(
                 "text/event-stream": {"schema": {"type": "string"}},
             },
         },
+        429: {"description": "Превышен лимит запросов (100/мин)"},
         503: {"description": "Компонент недоступен"},
     },
 )
+@limiter.limit("100/minute")
 async def ask(
+    request: Request,
     body: AskRequest,
     pipeline: Annotated[RAGPipeline, Depends(get_pipeline)],
 ):

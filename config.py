@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Embeddings
     # ------------------------------------------------------------------
 
-    embedding_provider: Literal["openai", "sentence-transformers", "ollama"] = Field(
+    embedding_provider: Literal["openai", "sentence-transformers", "ollama", "fake"] = Field(
         default="sentence-transformers", alias="EMBEDDING_PROVIDER"
     )
     embedding_model: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL")

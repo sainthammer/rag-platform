@@ -67,7 +67,7 @@ from llm.ports import LLMProvider
 from llm.llm_dataclasses import Message
 from llm.prompt_templates import STRICT
 from vector_store.ports import VectorDB
-from vector_store.store_dataclasses import SearchResult
+from vector_store.store_dataclasses import CollectionStats, SearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,9 @@ class _MockVectorDB(VectorDB):
             distances=[0.1 * (i + 1) for i in range(len(docs))],
             metadatas=[{"source": "mock"} for _ in docs],
         )
+
+    def get_stats(self) -> CollectionStats:  # noqa: D102
+        return CollectionStats(collection="mock", vectors_count=len(self._DOCS))
 
 
 class _MockLLMProvider(LLMProvider):

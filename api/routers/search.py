@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from api.deps import get_embed_service
+from api.limiter import limiter
 from api.schemas import SearchRequest, SearchResponse, SearchResultItem
 from config import build_vector_db, settings
 from embeddings.ports import EmbeddingService
@@ -24,8 +25,15 @@ def _distance_to_score(d: float) -> float:
     "/search",
     response_model=SearchResponse,
     summary="Семантический поиск по коллекции",
+    description=(
+        "Векторизовать запрос и вернуть `n_results` ближайших чанков. "
+        "Лимит: **500 запросов / минуту** с одного IP."
+    ),
+    responses={429: {"description": "Превышен лимит запросов (500/мин)"}},
 )
+@limiter.limit("500/minute")
 async def search(
+    request: Request,
     body: SearchRequest,
     embed_service: Annotated[EmbeddingService, Depends(get_embed_service)],
 ) -> SearchResponse:

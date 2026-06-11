@@ -130,7 +130,11 @@ def test_chroma_exact_match_top1(tmp_path: Path) -> None:
 
 
 def test_qdrant_inmemory_exact_match_top1() -> None:
-    """QdrantVectorStore(in_memory): точный текст → top-1 с высоким score."""
+    """QdrantVectorStore(in_memory): точный текст → top-1 с низкой дистанцией.
+
+    Qdrant возвращает cosine similarity; адаптер конвертирует в дистанцию (1 - sim),
+    поэтому точное совпадение → dist ≈ 0.0 (аналогично L2 у Chroma).
+    """
     store = QdrantVectorStore(
         "exact_qdrant", vector_size=8, vectorizer=_fitted_vectorizer(), in_memory=True
     )
@@ -141,7 +145,7 @@ def test_qdrant_inmemory_exact_match_top1() -> None:
 
     assert res.documents, "Qdrant вернул пустой результат"
     assert res.documents[0] == target, f"top-1 != target: {res.documents[0]!r}"
-    assert res.distances[0] > 0.9, f"score слишком низкий: {res.distances[0]}"
+    assert res.distances[0] < 0.1, f"дистанция слишком высокая: {res.distances[0]}"
 
 
 def test_chroma_and_qdrant_top1_match(tmp_path: Path) -> None:
@@ -322,7 +326,10 @@ def _conn(container) -> dict:
 @_tc_skip
 @pytest.mark.integration
 def test_tc_qdrant_exact_match(tmp_path: Path, qdrant_container) -> None:
-    """[Docker] QdrantVectorStore через реальный контейнер: exact-match top-1."""
+    """[Docker] QdrantVectorStore через реальный контейнер: exact-match top-1.
+
+    Адаптер хранит dist = 1 - cosine_sim, поэтому точное совпадение → dist ≈ 0.
+    """
     store = QdrantVectorStore(
         "tc_exact", vector_size=8, vectorizer=_fitted_vectorizer(), **_conn(qdrant_container)
     )
@@ -332,7 +339,7 @@ def test_tc_qdrant_exact_match(tmp_path: Path, qdrant_container) -> None:
     res = store.search(_EMBED.embed(target), n_results=3)
 
     assert res.documents[0] == target
-    assert res.distances[0] > 0.9
+    assert res.distances[0] < 0.1
 
 
 @_tc_skip
