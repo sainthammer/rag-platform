@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Annotated, AsyncGenerator
 
@@ -18,6 +19,28 @@ from fastapi.responses import StreamingResponse
 from api.deps import get_pipeline
 from api.schemas import AskRequest, AskResponse, AskSourceItem
 from retrieval.pipeline import RAGPipeline
+
+
+def _inline_refs(schema: dict) -> dict:
+    """Раскрыть $defs/$ref в Pydantic-схеме, чтобы Swagger UI мог её разобрать."""
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+
+    def resolve(obj: object) -> object:
+        if isinstance(obj, dict):
+            if "$ref" in obj and len(obj) == 1:
+                name = obj["$ref"].rsplit("/", 1)[-1]
+                if name in defs:
+                    return resolve(defs[name])
+            return {k: resolve(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [resolve(i) for i in obj]
+        return obj
+
+    return resolve(schema)  # type: ignore[return-value]
+
+
+_ASK_RESPONSE_SCHEMA = _inline_refs(AskResponse.model_json_schema())
 
 router = APIRouter(tags=["ask"])
 
@@ -40,7 +63,7 @@ async def _sse_generator(
         200: {
             "description": "JSON AskResponse (stream=false) или SSE-поток (stream=true)",
             "content": {
-                "application/json": {"schema": AskResponse.model_json_schema()},
+                "application/json": {"schema": _ASK_RESPONSE_SCHEMA},
                 "text/event-stream": {"schema": {"type": "string"}},
             },
         },

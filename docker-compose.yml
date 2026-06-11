@@ -8,7 +8,7 @@ services:
       # Override localhost URLs from .env with Docker service names
       - CHROMA_HOST=chroma
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     depends_on:
       - chroma
@@ -17,6 +17,7 @@ services:
       - ollama
     volumes:
       - .:/app
+      - ${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
 
   chroma:

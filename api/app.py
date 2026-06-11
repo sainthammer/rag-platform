@@ -1,7 +1,9 @@
 """FastAPI-приложение: точка сборки всех роутеров и lifespan."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI
@@ -9,10 +11,49 @@ from fastapi import Depends, FastAPI
 from api.middleware.auth import require_auth
 from api.routers import ask, collections, eval, health, ingest, metrics, search
 from config import build_embedding_service, build_llm_provider, build_vector_db, settings
+from embeddings.ports import EmbeddingService
 from observability.tracing import instrument_fastapi
 from retrieval.pipeline import RAGPipeline
 
 logger = logging.getLogger("uvicorn.error")
+
+
+async def _seed_docs_task(embed_service: EmbeddingService, collection: str, docs_dir: str = "docs") -> None:
+    """Загрузить все .md из docs/ в коллекцию, если она пустая."""
+    from chunking import ingest as chunking_ingest
+
+    docs_path = Path(docs_dir)
+    if not docs_path.exists():
+        return
+
+    db = build_vector_db(settings, collection=collection)
+    if await asyncio.to_thread(db.count) > 0:
+        logger.info("Seed: коллекция %r уже заполнена, пропускаем", collection)
+        return
+
+    md_files = sorted(docs_path.rglob("*.md"))
+    if not md_files:
+        return
+
+    logger.info("Seed: индексируем %d .md файлов → коллекция %r", len(md_files), collection)
+    total = 0
+    for path in md_files:
+        try:
+            chunks = await asyncio.to_thread(chunking_ingest, path, strategy="by_header")
+            if not chunks:
+                continue
+            texts = [c.text for c in chunks]
+            embeddings = await asyncio.to_thread(embed_service.embed_batch, texts)
+            rel = path.relative_to(docs_path).as_posix()
+            ids = [f"{rel}_chunk{i}" for i in range(len(chunks))]
+            metadatas = [c.metadata for c in chunks]
+            await asyncio.to_thread(db.add, ids, embeddings, texts, metadatas)
+            total += len(chunks)
+            logger.info("Seed: %s → %d чанков", path.name, len(chunks))
+        except Exception as exc:
+            logger.warning("Seed: не удалось индексировать %s: %s", path.name, exc)
+
+    logger.info("Seed: готово — %d чанков из %d файлов", total, len(md_files))
 
 
 @asynccontextmanager
@@ -36,6 +77,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.store_backend = settings.vector_store_backend
     app.state.embed_service = embed_service
     app.state.pipeline = pipeline
+
+    asyncio.create_task(_seed_docs_task(embed_service, settings.default_collection))
 
     yield
 

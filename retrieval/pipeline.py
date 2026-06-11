@@ -28,6 +28,15 @@ from llm.llm_dataclasses import Message
 from llm.ports import LLMProvider
 from llm.prompt_templates import BASE, PromptTemplate
 from llm.token_budget import TokenBudgetManager
+from observability.metrics import (
+    EMBEDDING_LATENCY_SECONDS,
+    EMBEDDING_REQUESTS_TOTAL,
+    LLM_LATENCY_SECONDS,
+    LLM_REQUESTS_TOTAL,
+    RAG_LATENCY_SECONDS,
+    RAG_REQUESTS_TOTAL,
+    RETRIEVAL_CHUNK_COUNT,
+)
 from vector_store.ports import VectorDB
 
 FALLBACK_ANSWER = "К сожалению, я не нашёл информации по вашему вопросу."
@@ -95,6 +104,27 @@ class RAGPipeline:
         self.score_threshold = score_threshold
         self.fallback_answer = fallback_answer
 
+        # Определяем имя embedding-модели из owner-объекта функции embed
+        owner = getattr(embed_fn, "__self__", None)
+        if owner is not None:
+            base = getattr(owner, "base", owner)
+            self._embed_model: str = getattr(base, "model_name", getattr(base, "model", "unknown"))
+        else:
+            self._embed_model = "unknown"
+
+        # Инициализируем все лейблы заранее — Prometheus создаст time series
+        # сразу, и панели ошибок будут показывать 0 вместо "no data"
+        for _s in ("success", "error"):
+            RAG_REQUESTS_TOTAL.labels(status=_s)
+        _llm_provider = type(llm).__name__
+        _llm_model = getattr(llm, "model", "unknown")
+        for _s in ("success", "error"):
+            LLM_REQUESTS_TOTAL.labels(provider=_llm_provider, model=_llm_model, status=_s)
+        LLM_LATENCY_SECONDS.labels(provider=_llm_provider, model=_llm_model)
+        for _s in ("success", "error"):
+            EMBEDDING_REQUESTS_TOTAL.labels(model=self._embed_model, status=_s)
+        EMBEDDING_LATENCY_SECONDS.labels(model=self._embed_model)
+
     async def ask(
         self,
         question: str,
@@ -117,33 +147,58 @@ class RAGPipeline:
         """
         start = time.monotonic()
 
-        sources, confidence = self._retrieve(question, collection)
+        try:
+            sources, confidence = self._retrieve(question, collection)
+            RETRIEVAL_CHUNK_COUNT.observe(len(sources))
 
-        if not sources or confidence < self.score_threshold:
+            if not sources or confidence < self.score_threshold:
+                RAG_REQUESTS_TOTAL.labels(status="success").inc()
+                RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
+                return RAGResponse(
+                    answer=self.fallback_answer,
+                    sources=[],
+                    confidence=confidence,
+                    latency_ms=(time.monotonic() - start) * 1000,
+                )
+
+            messages = self._build_messages(question, sources)
+
+            llm_start = time.monotonic()
+            try:
+                llm_result = await self.llm.complete(messages, stream=stream)
+                LLM_REQUESTS_TOTAL.labels(
+                    provider=type(self.llm).__name__, model=getattr(self.llm, "model", "unknown"), status="success"
+                ).inc()
+            except Exception:
+                LLM_REQUESTS_TOTAL.labels(
+                    provider=type(self.llm).__name__, model=getattr(self.llm, "model", "unknown"), status="error"
+                ).inc()
+                raise
+            finally:
+                LLM_LATENCY_SECONDS.labels(
+                    provider=type(self.llm).__name__, model=getattr(self.llm, "model", "unknown")
+                ).observe(time.monotonic() - llm_start)
+
+            if isinstance(llm_result, str):
+                answer = llm_result
+            else:
+                parts: list[str] = []
+                async for token in llm_result:
+                    parts.append(token)
+                answer = "".join(parts)
+
+            RAG_REQUESTS_TOTAL.labels(status="success").inc()
+            RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
             return RAGResponse(
-                answer=self.fallback_answer,
-                sources=[],
+                answer=answer,
+                sources=sources,
                 confidence=confidence,
                 latency_ms=(time.monotonic() - start) * 1000,
             )
-
-        messages = self._build_messages(question, sources)
-        llm_result = await self.llm.complete(messages, stream=stream)
-
-        if isinstance(llm_result, str):
-            answer = llm_result
-        else:
-            parts: list[str] = []
-            async for token in llm_result:
-                parts.append(token)
-            answer = "".join(parts)
-
-        return RAGResponse(
-            answer=answer,
-            sources=sources,
-            confidence=confidence,
-            latency_ms=(time.monotonic() - start) * 1000,
-        )
+        except Exception:
+            RAG_REQUESTS_TOTAL.labels(status="error").inc()
+            RAG_LATENCY_SECONDS.observe(time.monotonic() - start)
+            raise
 
     async def ask_stream(
         self,
@@ -207,7 +262,16 @@ class RAGPipeline:
         Returns:
             Кортеж (список SourceChunk, max score среди них).
         """
-        embedding = self.embed_fn(question)
+        _embed_start = time.monotonic()
+        try:
+            embedding = self.embed_fn(question)
+            EMBEDDING_REQUESTS_TOTAL.labels(model=self._embed_model, status="success").inc()
+        except Exception:
+            EMBEDDING_REQUESTS_TOTAL.labels(model=self._embed_model, status="error").inc()
+            raise
+        finally:
+            EMBEDDING_LATENCY_SECONDS.labels(model=self._embed_model).observe(time.monotonic() - _embed_start)
+
         db = self.vector_db_factory(collection)
         result = db.search(embedding, n_results=self.n_results)
 

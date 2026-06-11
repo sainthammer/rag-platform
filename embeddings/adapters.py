@@ -105,17 +105,21 @@ class SentenceTransformersService(EmbeddingService):
     """
 
     def __init__(self, model_name: str = "BAAI/bge-m3", normalize: bool = True) -> None:
-        """Загрузить SentenceTransformers-модель и сохранить параметры.
+        """Сохранить параметры; модель загружается лениво при первом вызове embed().
 
         Args:
             model_name: Имя модели HuggingFace/SentenceTransformers.
             normalize: Нужно ли нормализовать embeddings внутри ``encode``.
         """
-        from sentence_transformers import SentenceTransformer
-
         self.model_name = model_name
         self.normalize = normalize
-        self.model = SentenceTransformer(model_name)
+        self._model = None  # загружается при первом вызове
+
+    def _load_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self.model_name)
+        return self._model
 
     def embed(self, text: str) -> list[float]:
         """Построить embedding для одного текста через batch-метод.
@@ -140,7 +144,8 @@ class SentenceTransformersService(EmbeddingService):
         if not texts:
             return []
 
-        encoded = self.model.encode(
+        model = self._load_model()
+        encoded = model.encode(
             texts,
             normalize_embeddings=self.normalize,
             convert_to_numpy=False,
@@ -153,10 +158,11 @@ class SentenceTransformersService(EmbeddingService):
         Returns:
             Количество координат embedding-вектора.
         """
-        if hasattr(self.model, "get_embedding_dimension"):
-            dimension = self.model.get_embedding_dimension()
+        model = self._load_model()
+        if hasattr(model, "get_embedding_dimension"):
+            dimension = model.get_embedding_dimension()
         else:
-            dimension = self.model.get_sentence_embedding_dimension()
+            dimension = model.get_sentence_embedding_dimension()
 
         if dimension is not None:
             return int(dimension)
