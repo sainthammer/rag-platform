@@ -5,7 +5,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from vector_store.store_dataclasses import SearchResult
+from vector_store.store_dataclasses import CollectionStats, SearchResult
 
 
 class VectorDB(ABC):
@@ -45,4 +45,11 @@ class VectorDB(ABC):
 
     """
     Кол-во записей в коллекции
+    """
+
+    @abstractmethod
+    def get_stats(self) -> CollectionStats: ...
+
+    """
+    Статистика коллекции: кол-во векторов, размер на диске и в RAM.
     """

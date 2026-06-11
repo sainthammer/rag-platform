@@ -2,11 +2,20 @@
 Реализации интерфейсов для базового взаимодействия с векторными БД.
 """
 
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from vector_store.bm25 import BM25SparseVectorizer
-from vector_store.store_dataclasses import SearchResult
+from vector_store.store_dataclasses import CollectionStats, SearchResult
 from vector_store.utils import to_uuid
 
 from .ports import VectorDB
+
+_RETRY = dict(
+    retry=retry_if_exception_type((ConnectionError, OSError, TimeoutError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
+)
 
 # ----------------- ChromaDB -----------------
 
@@ -38,6 +47,7 @@ class ChromaDB(VectorDB):
 
         self.collection = self.client.get_or_create_collection(collection)
 
+    @retry(**_RETRY)
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
         """
         Добавление записей в коллекцию.
@@ -57,6 +67,7 @@ class ChromaDB(VectorDB):
             metadatas=metadatas,
         )
 
+    @retry(**_RETRY)
     def search(self, query_embedding, n_results=3) -> SearchResult:
         """
         Функция поиска по коллекции
@@ -75,9 +86,10 @@ class ChromaDB(VectorDB):
             ids=raw["ids"][0],
             documents=(raw["documents"] or [[]])[0],
             distances=(raw["distances"] or [[]])[0],
-            metadatas=[dict(m) for m in (raw["metadatas"] or [[]])[0]],
+            metadatas=[dict(m) if m is not None else {} for m in (raw["metadatas"] or [[]])[0]],
         )
 
+    @retry(**_RETRY)
     def delete(self, ids) -> None:
         """
         удаление записи/записей по ее/их id
@@ -87,11 +99,19 @@ class ChromaDB(VectorDB):
         """
         self.collection.delete(ids=[to_uuid(id) for id in ids])
 
+    @retry(**_RETRY)
     def count(self) -> int:
         """
         Возвращает количество записей в коллекции
         """
         return self.collection.count()
+
+    @retry(**_RETRY)
+    def get_stats(self) -> CollectionStats:
+        return CollectionStats(
+            collection=self.collection.name,
+            vectors_count=self.collection.count(),
+        )
 
 
 # ----------------- Qdrant -----------------
@@ -137,6 +157,7 @@ class QdrantDB(VectorDB):
                 vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
 
+    @retry(**_RETRY)
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
         """
         Добавление записей в коллекцию.
@@ -169,6 +190,7 @@ class QdrantDB(VectorDB):
         for i in range(0, len(points), BATCH_SIZE):
             self.client.upsert(collection_name=self.collection, points=points[i : i + BATCH_SIZE])
 
+    @retry(**_RETRY)
     def search(self, query_embedding, n_results=3) -> SearchResult:
         """
         Функция поиска по коллекции
@@ -195,6 +217,7 @@ class QdrantDB(VectorDB):
             ],
         )
 
+    @retry(**_RETRY)
     def delete(self, ids) -> None:
         """
         удаление записи/записей по ее/их id
@@ -209,11 +232,23 @@ class QdrantDB(VectorDB):
             points_selector=PointIdsList(points=[to_uuid(id) for id in ids]),
         )
 
-    def count(self):
+    @retry(**_RETRY)
+    def count(self) -> int:
         """
         Возвращает количество записей в коллекции
         """
         return self.client.count(collection_name=self.collection).count
+
+    @retry(**_RETRY)
+    def get_stats(self) -> CollectionStats:
+        info = self.client.get_collection(self.collection)
+        return CollectionStats(
+            collection=self.collection,
+            vectors_count=info.points_count or 0,
+            segments_count=info.segments_count,
+            disk_size_bytes=getattr(info, "disk_data_size", None),
+            ram_size_bytes=getattr(info, "ram_data_size", None),
+        )
 
 
 # ----------------- QdrantVectorStore (dense + BM25 sparse) -----------------
@@ -279,6 +314,7 @@ class QdrantVectorStore(VectorDB):
                 },
             )
 
+    @retry(**_RETRY)
     def add(
         self,
         ids: list[str],
@@ -316,6 +352,7 @@ class QdrantVectorStore(VectorDB):
                 collection_name=self.collection, points=points[i : i + BATCH]
             )
 
+    @retry(**_RETRY)
     def search(self, query_embedding: list[float], n_results: int = 3) -> SearchResult:
         result = self.client.query_points(
             collection_name=self.collection,
@@ -326,6 +363,7 @@ class QdrantVectorStore(VectorDB):
         )
         return self._hits_to_result(result.points)
 
+    @retry(**_RETRY)
     def sparse_search(self, query_text: str, n_results: int = 3) -> SearchResult:
         """BM25 keyword search using the sparse vector index."""
         from qdrant_client.http.models import SparseVector as QSparse
@@ -343,6 +381,7 @@ class QdrantVectorStore(VectorDB):
         )
         return self._hits_to_result(result.points)
 
+    @retry(**_RETRY)
     def delete(self, ids: list[str]) -> None:
         from qdrant_client.http.models import PointIdsList
 
@@ -351,8 +390,20 @@ class QdrantVectorStore(VectorDB):
             points_selector=PointIdsList(points=[to_uuid(i) for i in ids]),
         )
 
+    @retry(**_RETRY)
     def count(self) -> int:
         return self.client.count(collection_name=self.collection).count
+
+    @retry(**_RETRY)
+    def get_stats(self) -> CollectionStats:
+        info = self.client.get_collection(self.collection)
+        return CollectionStats(
+            collection=self.collection,
+            vectors_count=info.points_count or 0,
+            segments_count=info.segments_count,
+            disk_size_bytes=getattr(info, "disk_data_size", None),
+            ram_size_bytes=getattr(info, "ram_data_size", None),
+        )
 
     def _hits_to_result(self, hits: list) -> SearchResult:
         return SearchResult(

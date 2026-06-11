@@ -2,7 +2,7 @@
 Базовые структуры для работы с БД
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -24,3 +24,14 @@ class SearchResult:
     documents: list[str]
     distances: list[float]
     metadatas: list[dict[str, Any]]
+
+
+@dataclass
+class CollectionStats:
+    """Статистика коллекции векторного хранилища."""
+
+    collection: str
+    vectors_count: int
+    segments_count: int | None = field(default=None)
+    disk_size_bytes: int | None = field(default=None)
+    ram_size_bytes: int | None = field(default=None)
