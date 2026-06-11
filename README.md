@@ -15,12 +15,18 @@
 - [Как читать Grafana dashboard](#как-читать-grafana-dashboard)
 - [Как интерпретировать RAGAS отчёт](#как-интерпретировать-ragas-отчёт)
 - [Сравнение chunk_size: 256 vs 512](#сравнение-chunk_size-256-vs-512)
+- [Быстрый старт (5 шагов)](#быстрый-старт-5-шагов)
 - [Установка](#установка)
 - [Конфигурация](#конфигурация)
 - [Запуск](#запуск)
+- [curl-примеры](#curl-примеры)
 - [Тесты](#тесты)
 - [Стек](#стек)
 - [Hybrid Vector Search (BM25 + Qdrant + RRF)](#hybrid-vector-search-bm25--qdrant--rrf)
+- [Как добавить новый LLM-провайдер](#как-добавить-новый-llm-провайдер)
+- [Chunking: стратегии и загрузчики](#chunking-стратегии-и-загрузчики)
+- [Retrieval: переранжирование и TTL-кэш](#retrieval-переранжирование)
+- [Коллекции API](#коллекции-api)
 
 ---
 
@@ -75,33 +81,158 @@
 4. `/v1/ask` с `stream=true` возвращает `text/event-stream`.
 5. `/v1/eval/run` возвращает `job_id` со статусом `pending`.
 
+### Логирование RAG-вызовов (`retrieval/pipeline.py`)
+
+Каждый вызов `RAGPipeline.ask()` пишет структурированную запись в логгер `rag.pipeline`:
+
+| Поле | Что |
+|---|---|
+| `question` | первые 200 символов вопроса |
+| `collection` | имя коллекции |
+| `chunks_count` | число retrieved чанков |
+| `prompt_tokens` | токены system + user сообщений |
+| `completion_tokens` | токены в ответе LLM |
+| `latency_ms` | полное время цикла |
+| `cache_hit` | `true` / `false` |
+
+При cache hit пишется отдельная запись `rag_cache_hit`. При fallback (нет контекста) — `rag_call` с нулевыми счётчиками токенов.
+
+### TTL-кэш ответов (`retrieval/pipeline.py`)
+
+`RAGPipeline` получил встроенный in-memory кэш с TTL 5 минут:
+- Параметр `cache_ttl: float = 300.0` (0 — отключить)
+- Ключ: `(question, collection)` — один вопрос в разных коллекциях хранится отдельно
+- При cache hit LLM и embed не вызываются
+- `ask_stream()` кэш не использует
+
+### Rate Limiting (`api/limiter.py`)
+
+Ограничение запросов через `slowapi` по IP клиента:
+
+| Endpoint | Лимит |
+|---|---|
+| `POST /v1/ask` | 100 запросов / минуту |
+| `POST /v1/search` | 500 запросов / минуту |
+
+При превышении возвращается `HTTP 429 Too Many Requests`.
+
+### Request ID Middleware (`api/middleware/request_id.py`)
+
+Каждый запрос получает сквозной идентификатор `X-Request-ID`:
+- Если клиент прислал `X-Request-ID` — используется он (сквозная трассировка)
+- Иначе генерируется `uuid.uuid4()`
+- Доступен в роутерах через `request.state.request_id`
+- Прокидывается в OTel-спан как атрибут `http.request_id`
+- Возвращается клиенту в заголовке ответа
+
+### OpenAPI + Pydantic examples (`api/schemas.py`)
+
+Все Pydantic-схемы дополнены:
+- `description=` для каждого поля — видно в Swagger UI
+- `examples=[]` — конкретные значения в документации
+- `model_config` с `json_schema_extra` — полные примеры объектов
+- Описания `429` в endpoints `/ask` и `/search`
+
+### docker-compose.yml
+
+| Улучшение | Детали |
+|---|---|
+| `restart: unless-stopped` | Автоперезапуск для всех сервисов |
+| `healthcheck` | HTTP-проверки для api, chroma, qdrant |
+| `depends_on` с `condition: service_healthy` | api стартует только после готовности chroma и qdrant |
+| Grafana credentials | `GRAFANA_USER` / `GRAFANA_PASSWORD` из env |
+| `:ro` монтирование | Конфиги prometheus и grafana монтируются read-only |
+
+### Тесты (`tests/unit/`)
+
+| Файл | Что тестирует |
+|---|---|
+| `test_llm_adapters.py` | OpenAI, Anthropic, Ollama провайдеры без реальных API (17 тестов) |
+| `test_rag_cache_and_logging.py` | TTL-кэш (hit/miss/expiry/disabled) и логирование (13 тестов) |
+| `test_pipeline.py` (дополнен) | `run_detailed()`, error propagation, `TokenBudgetManager.remaining()` |
+
+Покрытие модуля `llm/` поднято с **55% → 95%**.
+
 ---
 
 ## Архитектура
 
 ```
 rag-platform/
-├── api/                    # FastAPI-приложение
-│   ├── routers/            # Роутеры по домену (ingest, search, ask, eval, …)
-│   ├── middleware/auth.py  # X-API-Key + JWT Bearer аутентификация
-│   ├── deps.py             # FastAPI-зависимости (get_pipeline, get_embed_service, …)
-│   ├── jobs.py             # In-memory хранилище фоновых задач
-│   ├── schemas.py          # Pydantic-схемы запросов и ответов
-│   └── app.py              # Точка сборки: lifespan, роутеры, OTel
+├── api/                         # FastAPI-приложение
+│   ├── routers/
+│   │   ├── ingest.py            # POST /v1/ingest, GET /v1/ingest/{job_id}
+│   │   ├── search.py            # POST /v1/search
+│   │   ├── ask.py               # POST /v1/ask (JSON + SSE streaming)
+│   │   ├── eval.py              # POST /v1/eval/run, GET /v1/eval/run/{job_id}
+│   │   ├── collections.py       # GET /v1/collections, DELETE /v1/collections/{name}
+│   │   ├── health.py            # GET /v1/health
+│   │   └── metrics.py           # GET /v1/metrics (Prometheus)
+│   ├── middleware/
+│   │   ├── auth.py              # X-API-Key + JWT Bearer аутентификация
+│   │   └── request_id.py        # X-Request-ID: uuid4, OTel span attribute
+│   ├── limiter.py               # slowapi Limiter (100/мин /ask, 500/мин /search)
+│   ├── deps.py                  # FastAPI-зависимости (get_pipeline, get_embed_service, …)
+│   ├── jobs.py                  # In-memory хранилище фоновых задач (asyncio.Lock)
+│   ├── schemas.py               # Pydantic-схемы с description + examples для Swagger UI
+│   ├── app.py                   # FastAPI-приложение: lifespan, роутеры, OTel, _seed_docs_task
+│   └── main.py                  # Точка входа для uvicorn (re-export из app.py)
 │
-├── chunking/               # Нарезка текста на чанки (RecursiveCharacterTextSplitter)
-├── embeddings/             # EmbeddingService: OpenAI, SentenceTransformers, кэш, fake
-├── vector_store/           # VectorDB ABC + ChromaDB / Qdrant адаптеры
-├── retrieval/              # RAGPipeline: embed → search → generate
-├── llm/                    # LLMProvider: OpenAI, Anthropic, Ollama + промпты + бюджет токенов
-├── mcp/                    # MCP-сервер (stdio + Streamable HTTP)
-├── evaluation/             # RAGAS-оценка: тест-кейсы, runner, HTML-отчёт
-├── observability/          # OpenTelemetry трейсинг + Prometheus метрики
-├── config.py               # Pydantic Settings + фабрики компонентов
+├── chunking/                    # Нарезка текста на чанки
+│   ├── ports.py                 # ABC: Chunker, DocumentLoader, Chunk
+│   ├── adapters.py              # FixedSizeChunker, ByHeaderChunker, SemanticChunker
+│   ├── loaders.py               # TextLoader, MarkdownLoader, HTMLLoader, PDFLoader
+│   ├── pipeline.py              # ingest(path) — маршрутизация по расширению файла
+│   └── ingest.py                # CLI: chunk_text → JSON или ChromaDB
+│
+├── embeddings/                  # EmbeddingService
+│   ├── ports.py                 # ABC EmbeddingService (embed, embed_batch)
+│   ├── adapters.py              # OpenAI, SentenceTransformers, Ollama, Fake
+│   ├── cache.py                 # CachedEmbeddingService (SQLite)
+│   ├── service.py               # build_embedding_service() — фабрика
+│   └── utils.py                 # L2-нормализация
+│
+├── vector_store/                # VectorDB
+│   ├── ports.py                 # ABC VectorDB (add, search, delete, count)
+│   ├── adapters.py              # ChromaDB, QdrantVectorStore, HybridVectorStore
+│   ├── bm25.py                  # SparseVector, BM25SparseVectorizer
+│   └── store_dataclasses.py     # SearchResult dataclass
+│
+├── retrieval/                   # RAG пайплайн
+│   ├── ports.py                 # ABC Reranker (rerank)
+│   ├── pipeline.py              # RAGPipeline, SourceChunk, RAGResponse
+│   └── rerankers.py             # CrossEncoderReranker, MMRReranker
+│
+├── llm/                         # LLM провайдеры
+│   ├── ports.py                 # ABC LLMProvider (complete)
+│   ├── adapters.py              # OpenAIProvider, AnthropicProvider, OllamaProvider
+│   ├── prompt_templates.py      # BASE, STRICT, CITATION, MULTILINGUAL шаблоны
+│   ├── token_budget.py          # TokenBudgetManager
+│   ├── pipeline.py              # RAGPipeline с OTel + Prometheus
+│   └── llm_dataclasses.py       # Message(role, content)
+│
+├── mcp/rag_server.py            # MCP-сервер (stdio + Streamable HTTP)
+│
+├── evaluation/                  # RAGAS-оценка
+│   ├── eval_runner.py           # run_evaluation(), generate_html_report()
+│   ├── testcase.py              # TestCase dataclass
+│   ├── testcases_dataset.py     # 45 тест-кейсов (positive/negative/multi_hop)
+│   └── ragas_eval.py            # Интеграция с RAGAS API
+│
+├── observability/               # OpenTelemetry + Prometheus
+│   ├── tracing.py               # setup_tracing(), instrument_fastapi()
+│   └── metrics.py               # Prometheus counters, histograms
+│
+├── config.py                    # Pydantic Settings + три фабрики компонентов
+├── reindex.py                   # CLI: очистить коллекцию и переиндексировать директорию
+├── compare_chunks.py            # Бенчмарк chunk_size=256 vs chunk_size=512
+├── demo.py                      # Интерактивное демо 6 шагов (BM25 → RAG)
+├── .env.example                 # Шаблон переменных окружения
+├── docker-compose.yml           # api, chroma, qdrant, ollama, jaeger, prometheus, grafana
 └── tests/
-    ├── unit/               # Тесты без внешних сервисов
-    ├── integration/        # Тесты с реальным ChromaDB in-memory
-    └── e2e/                # E2E-тест полного цикла ingest → search → ask
+    ├── unit/                    # Тесты без внешних сервисов (~1800 строк)
+    ├── integration/             # ChromaDB in-memory + testcontainers-тесты
+    └── e2e/                     # E2E-тест полного цикла ingest → search → ask
 ```
 
 Поток данных при запросе `/v1/ask`:
@@ -165,6 +296,48 @@ POST /v1/ask
 | `prompt_templates.py` | Шаблоны `BASE`, `STRICT`, `CITATION`, `MULTILINGUAL` |
 | `token_budget.py` | `TokenBudgetManager` — усечение чанков под лимит токенов |
 | `pipeline.py` | `RAGPipeline` с OTel-трейсингом и Prometheus метриками |
+| `llm_dataclasses.py` | `Message(role, content)` dataclass |
+
+#### Шаблоны промптов (`prompt_templates.py`)
+
+`PromptTemplate` — frozen dataclass. Реестр через `get_template(name)`.
+
+| Шаблон | Поведение | Когда использовать |
+|---|---|---|
+| `BASE` | Допускает факты из памяти модели; отвечает **только по-русски** | Общий вопрос-ответ |
+| `STRICT` | Только по переданному контексту, без внешних знаний | Снижение галлюцинаций |
+| `CITATION` | Ответ с цитатами `[1]`, `[2]` и списком источников | Академические / документационные задачи |
+| `MULTILINGUAL` | Определяет язык вопроса, отвечает на нём | Мультиязычные базы знаний |
+
+По умолчанию `api/app.py` использует шаблон `BASE`. Для production-сценариев рекомендуется `STRICT`.
+
+```python
+from llm.prompt_templates import get_template
+
+tmpl = get_template("strict")
+system_msg = tmpl.format_system(context="...retrieved chunks...")
+user_msg   = tmpl.format_user("Что такое Python?")
+```
+
+#### `TokenBudgetManager` (`token_budget.py`)
+
+Отвечает за усечение списка чанков под контекстное окно модели.
+
+```python
+mgr = TokenBudgetManager(model="gpt-4o-mini", reserved_tokens=1000)
+safe_chunks = mgr.fit_chunks(chunks)   # наибольший префикс, влезающий в бюджет
+remaining   = mgr.remaining(chunks)   # оставшийся запас токенов
+```
+
+Размеры контекстных окон (токены):
+
+| Модель | Окно |
+|---|---|
+| gpt-4o, gpt-4o-mini, gpt-4-turbo | 128 000 |
+| gpt-4 | 8 192 |
+| gpt-3.5-turbo | 16 385 |
+| claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001 | 200 000 |
+| Неизвестная (Ollama и др.) | 8 000 (fallback) |
 
 ### `retrieval/`
 
@@ -172,18 +345,119 @@ POST /v1/ask
 
 - `ask(question, collection)` → `RAGResponse` с полями `answer`, `sources`, `confidence`, `latency_ms`.
 - `ask_stream(question, collection)` → `AsyncGenerator[str]` — потоковая генерация токен за токеном.
-- `ask_multi(question, collections)` — параллельный поиск по нескольким коллекциям.
+- `ask_multi(question, collections)` — параллельный поиск по нескольким коллекциям через `asyncio.gather`.
 - `_retrieve(question, collection)` → список `SourceChunk` с полями `text`, `score`, `doc_id`, `metadata`.
 
+Дистанция из VectorDB преобразуется в score по формуле: `score = 1 / (1 + distance)`.
+
+Если retrieval не нашёл ни одного чанка выше порога, пайплайн возвращает константный ответ `FALLBACK_ANSWER` («К сожалению, я не нашёл информации по вашему вопросу») без вызова LLM.
+
+#### Реранкеры (`rerankers.py`)
+
+Опциональный шаг переранжирования результатов retrieval перед формированием промпта. Реализуют ABC `Reranker` из `retrieval/ports.py`.
+
+| Класс | Описание |
+|---|---|
+| `CrossEncoderReranker` | Использует `sentence_transformers.CrossEncoder`. Нормализует скоры через sigmoid. Рекомендован при необходимости точного ранжирования по паре (вопрос, чанк). |
+| `MMRReranker` | Maximal Marginal Relevance — баланс релевантности и разнообразия. Формула: `λ·sim(doc, query) − (1−λ)·max_s sim(doc, s)`. При `embed_fn=None` деградирует до сортировки по score. |
+
+```python
+from retrieval.rerankers import CrossEncoderReranker, MMRReranker
+
+# Cross-encoder (точный, медленнее)
+reranker = CrossEncoderReranker(model="cross-encoder/ms-marco-MiniLM-L-6-v2")
+reranked = reranker.rerank(query, source_chunks)
+
+# MMR (разнообразие результатов, быстрее)
+reranker = MMRReranker(embed_fn=embed, lambda_=0.5)
+reranked = reranker.rerank(query, source_chunks)
+```
+
+Реранкеры не включены в `RAGPipeline` по умолчанию — применяются как опциональный постпроцессинг.
+
+#### TTL-кэш ответов
+
+`RAGPipeline` содержит встроенный in-memory кэш повторяющихся вопросов.
+
+```python
+pipeline = RAGPipeline(
+    ...,
+    cache_ttl=300.0,   # TTL в секундах, по умолчанию 5 минут
+                       # 0 — отключить кэш полностью
+)
+```
+
+**Поведение:**
+- Ключ кэша: `(question, collection)` — одинаковый вопрос в разных коллекциях хранится отдельно.
+- При cache hit LLM и embed **не вызываются** — возвращается тот же объект `RAGResponse`.
+- `ask_stream()` кэш не использует (генераторы не кэшируемы).
+- Кэш живёт в памяти экземпляра `RAGPipeline` — не переживает перезапуск приложения.
+- В логе при cache hit появляется запись `rag_cache_hit`; при обычном вызове — `rag_call` с `cache_hit=False`.
+
 ### `chunking/`
+
+Модуль предоставляет три стратегии разбивки и четыре загрузчика документов.
+
+#### Стратегии разбивки (`adapters.py`)
+
+| Класс | Описание |
+|---|---|
+| `FixedSizeChunker` | Скользящее окно `RecursiveCharacterTextSplitter`. Универсальный вариант. |
+| `ByHeaderChunker` | Разбивка по Markdown-заголовкам `#`–`######`. Если секция > `chunk_size`, применяет fallback на `FixedSizeChunker`. Секции короче `min_chunk_size=30` пропускаются. |
+| `SemanticChunker` | Объединяет параграфы по cosine similarity их эмбеддингов (если задан `embed_fn`) или жадно по размеру. |
+
+```python
+from chunking import FixedSizeChunker, ByHeaderChunker, SemanticChunker, ingest
+
+# Простая разбивка
+chunker = FixedSizeChunker(chunk_size=500, chunk_overlap=50)
+chunks = chunker.chunk(text)  # list[Chunk]
+
+# По заголовкам (Markdown)
+chunker = ByHeaderChunker(chunk_size=800)
+
+# Семантическая разбивка с эмбеддингами
+chunker = SemanticChunker(embed_fn=my_embed_fn, similarity_threshold=0.8)
+
+# Высокоуровневый вход: load + chunk по расширению файла
+chunks = ingest("docs/readme.md", chunker=chunker)
+```
+
+#### Загрузчики документов (`loaders.py`)
+
+| Класс | Форматы | Примечание |
+|---|---|---|
+| `TextLoader` | `.txt` | UTF-8, без обработки |
+| `MarkdownLoader` | `.md` | Параметр `strip_markup=False` удаляет разметку regex |
+| `HTMLLoader` | `.html` | Парсинг через BeautifulSoup4 |
+| `PDFLoader` | `.pdf` | Извлечение текста через pypdf |
+
+Функция `ingest(path, chunker)` автоматически выбирает загрузчик по расширению и разбивает документ. Стабильный `id` каждого чанка генерируется из хэша текста + индекса.
+
+#### Поддерживаемые форматы в `reindex.py`
+
+`.txt`, `.md`, `.pdf`, `.docx`, `.html`
+
+#### CLI (`chunking/ingest.py`)
+
+```bash
+# Разбить файл и вывести чанки в JSON
+PYTHONPATH=. python chunking/ingest.py docs/readme.md --format json
+
+# Разбить и проиндексировать в ChromaDB
+PYTHONPATH=. python chunking/ingest.py docs/readme.md --index --collection my_col
+
+# Задать параметры разбивки
+PYTHONPATH=. python chunking/ingest.py docs/readme.md --chunk-size 300 --chunk-overlap 30
+```
+
+#### Низкоуровневая утилита (обратная совместимость)
 
 ```python
 from chunking import chunk_text
 
-chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)
+chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)  # list[str]
 ```
-
-Использует `RecursiveCharacterTextSplitter` из `langchain-text-splitters`. Пустые чанки автоматически отфильтровываются.
 
 ### `api/`
 
@@ -193,6 +467,10 @@ chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)
 - `X-API-Key: <key>` — прямое сравнение с `settings.api_secret_key`.
 - `Authorization: Bearer <token>` — верификация JWT (алгоритм из `JWT_ALGORITHM`).
 
+#### Точка входа: `main.py` vs `app.py`
+
+`api/main.py` — однострочный re-export (`from api.app import app`). Нужен только как стабильный адрес для uvicorn (`uvicorn api.main:app`). Всё приложение живёт в `api/app.py`.
+
 #### Lifespan (`app.py`)
 
 При старте приложения в `app.state` кладутся:
@@ -201,6 +479,8 @@ chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)
 - `llm`, `vector_db`, `store_client`, `store_backend`
 
 Это позволяет роутерам получать компоненты через `Depends(get_pipeline)` без пересоздания на каждый запрос.
+
+После инициализации запускается фоновая задача `_seed_docs_task()` — она автоматически индексирует `.md`-файлы из директории `docs/` в коллекцию `default` при старте. Файлы обрабатываются батчами по 20 штук (`_SEED_FILE_BATCH = 20`) с единым `embed_batch()` и `db.add()` на батч для минимального числа обращений к сервисам.
 
 #### Фоновые задачи (`jobs.py`)
 
@@ -319,6 +599,25 @@ data: [DONE]
 
 ```
 GET /v1/eval/run/{job_id}
+```
+
+### `GET /v1/collections` — список коллекций
+
+Возвращает список всех коллекций с числом векторов в каждой. Работает как с ChromaDB, так и с Qdrant.
+
+```json
+{
+  "collections": [
+    { "name": "default", "count": 342 },
+    { "name": "bench_256", "count": 189 }
+  ]
+}
+```
+
+### `DELETE /v1/collections/{name}` — удалить коллекцию
+
+```json
+{ "deleted": "bench_256" }
 ```
 
 ### `GET /v1/health` — состояние системы
@@ -465,6 +764,20 @@ docker compose exec ollama ollama pull llama3.2
 Отчёт создаётся командой `python evaluation/eval_runner.py` или через `POST /v1/eval/run`.  
 Выходной файл: `eval_report.html` (открывается в браузере).
 
+### Структура тест-датасета (`evaluation/testcases_dataset.py`)
+
+Фиксированный датасет из **45 тест-кейсов** по Python-теории:
+
+| Категория | Кол-во | Назначение |
+|---|---|---|
+| `positive` | 30 | Вопрос, ответ на который есть в базе знаний |
+| `negative` | 10 | Вопрос, ответа нет в базе — проверяет галлюцинации |
+| `multi_hop` | 5 | Требует объединения информации из нескольких источников |
+
+`TestCase` — frozen dataclass с полями: `question`, `ground_truth`, `source_doc`, `category`.
+
+Путь к базе знаний задаётся переменной окружения `KNOWLEDGE_BASE_PATH` (default: `"Python_Theory"`).
+
 ### Метрики RAGAS
 
 | Метрика | Что измеряет | Хорошо | Плохо |
@@ -571,6 +884,37 @@ docker compose exec api python compare_chunks.py --output results/my_report.json
 
 ---
 
+## Быстрый старт (5 шагов)
+
+Полный стек за 5 шагов — от клонирования до первого ответа:
+
+```bash
+# 1. Клонировать и войти
+git clone <repo-url> rag-platform && cd rag-platform
+
+# 2. Настроить окружение
+cp .env.example .env
+# Отредактировать .env: задать API_SECRET_KEY, выбрать LLM_PROVIDER
+
+# 3. Поднять все сервисы
+docker compose up --build -d
+
+# 4. Скачать модели Ollama (если LLM_PROVIDER=ollama)
+docker compose exec ollama ollama pull llama3.2
+docker compose exec ollama ollama pull nomic-embed-text
+
+# 5. Проверить что всё работает
+curl http://localhost:8080/v1/health
+```
+
+После этого:
+- Swagger UI: http://localhost:8080/docs
+- Grafana: http://localhost:3000 (admin / admin)
+- Jaeger: http://localhost:16686
+- Prometheus: http://localhost:9090
+
+---
+
 ## Установка
 
 ```bash
@@ -590,8 +934,12 @@ pip install -e ".[dev,eval]"
 
 # 4. Настроить конфиг
 cp .env.example .env
-# Отредактировать .env
+# Отредактировать .env (файл содержит все переменные с комментариями)
 ```
+
+В `.env.example` предусмотрены переменные для всех компонентов: LLM (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_BASE_URL`), embeddings, ChromaDB, Qdrant, API-ключи, JWT, OTel.
+
+> **Важно:** если `CHROMA_PERSIST_DIR` задан — используется локальный `PersistentClient` (без сервера). Если пусто — `HttpClient` (требует запущенного ChromaDB-контейнера).
 
 ---
 
@@ -674,11 +1022,19 @@ PYTHONPATH=. .venv/bin/python mcp/rag_server.py --transport http --port 8001
 
 ```bash
 docker-compose up --build
-# Swagger UI: http://localhost:8080/docs
-# Prometheus:  http://localhost:9090
-# Grafana:     http://localhost:3000
-# Jaeger:      http://localhost:16686
 ```
+
+| Сервис | URL | Описание |
+|---|---|---|
+| **API** | http://localhost:8080 | FastAPI (`/docs` — Swagger UI) |
+| **ChromaDB** | http://localhost:8000 | VectorDB (HTTP-режим) |
+| **Qdrant** | http://localhost:6333 | Альтернативный VectorDB |
+| **Ollama** | http://localhost:11434 | Локальный LLM + embeddings |
+| **Prometheus** | http://localhost:9090 | Метрики |
+| **Grafana** | http://localhost:3000 | Дашборды (admin / admin) |
+| **Jaeger** | http://localhost:16686 | Трейсинг |
+
+> **Dockerfile:** использует `python:3.11-slim` с CPU-only PyTorch (`--index-url https://download.pytorch.org/whl/cpu`) — предотвращает загрузку 2 ГБ CUDA-пакетов.
 
 ### Примеры модулей
 
@@ -694,6 +1050,210 @@ PYTHONPATH=. .venv/bin/python llm/example.py ollama
 
 # Observability
 PYTHONPATH=. .venv/bin/python observability/example.py
+```
+
+---
+
+## curl-примеры
+
+Все примеры используют `X-API-Key` аутентификацию. Подставьте значение из `.env`:
+
+```bash
+export KEY=your-api-secret-key
+export BASE=http://localhost:8080/v1
+```
+
+### Здоровье системы (без аутентификации)
+
+```bash
+curl $BASE/health
+```
+
+```json
+{
+  "status": "ok",
+  "components": {
+    "vector_store": {"status": "ok", "detail": "backend=chroma, vectors=342"},
+    "llm": {"status": "ok", "detail": "OllamaProvider, url=http://localhost:11434/v1"},
+    "cache": {"status": "not_configured", "detail": null}
+  }
+}
+```
+
+### Загрузка документа — текст
+
+```bash
+curl -X POST $BASE/ingest \
+     -H "X-API-Key: $KEY" \
+     -F "text=Python — интерпретируемый язык программирования общего назначения." \
+     -F "collection=default" \
+     -F "doc_id=intro"
+```
+
+```json
+{"job_id": "a3f1c2d4", "status": "pending"}
+```
+
+### Загрузка документа — файл
+
+```bash
+curl -X POST $BASE/ingest \
+     -H "X-API-Key: $KEY" \
+     -F "file=@README.md" \
+     -F "collection=default"
+```
+
+### Загрузка документа — URL
+
+```bash
+curl -X POST $BASE/ingest \
+     -H "X-API-Key: $KEY" \
+     -F "url=https://docs.python.org/3/tutorial/introduction.html" \
+     -F "collection=default"
+```
+
+### Статус задачи индексации
+
+```bash
+curl $BASE/ingest/a3f1c2d4 -H "X-API-Key: $KEY"
+```
+
+```json
+{"job_id": "a3f1c2d4", "status": "done", "chunks_indexed": 12, "collection": "default", "error": null}
+```
+
+### Семантический поиск (лимит 500/мин)
+
+```bash
+curl -X POST $BASE/search \
+     -H "X-API-Key: $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"query": "Что такое генератор?", "collection": "default", "n_results": 3}'
+```
+
+```json
+{
+  "results": [
+    {"id": "intro_chunk0", "text": "Генератор — функция с yield...", "score": 0.87, "metadata": {}}
+  ],
+  "query": "Что такое генератор?",
+  "collection": "default"
+}
+```
+
+### Вопрос — полный RAG-цикл (лимит 100/мин)
+
+```bash
+curl -X POST $BASE/ask \
+     -H "X-API-Key: $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "Что такое декоратор в Python?", "collection": "default"}'
+```
+
+```json
+{
+  "answer": "Декоратор — это функция высшего порядка...",
+  "sources": [{"text": "...", "score": 0.91, "doc_id": "intro_chunk2", "metadata": {}}],
+  "confidence": 0.91,
+  "latency_ms": 312.4
+}
+```
+
+### Вопрос — потоковый режим (SSE)
+
+```bash
+curl -X POST $BASE/ask \
+     -H "X-API-Key: $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "Объясни генераторы", "collection": "default", "stream": true}'
+```
+
+```
+data: {"token": "Генератор"}
+data: {"token": " —"}
+data: {"token": " функция"}
+...
+data: [DONE]
+```
+
+### Список коллекций
+
+```bash
+curl $BASE/collections -H "X-API-Key: $KEY"
+```
+
+```json
+{"collections": [{"name": "default", "vectors_count": 342}]}
+```
+
+### Удалить коллекцию
+
+```bash
+curl -X DELETE $BASE/collections/bench_256 -H "X-API-Key: $KEY"
+```
+
+```json
+{"deleted": "bench_256"}
+```
+
+### Запуск RAGAS-оценки
+
+```bash
+curl -X POST $BASE/eval/run \
+     -H "X-API-Key: $KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"mode": "mock", "max_cases": 5, "output_path": "eval_report.html"}'
+```
+
+```json
+{"job_id": "e9b2c1a7", "status": "pending"}
+```
+
+### Статус оценки
+
+```bash
+curl $BASE/eval/run/e9b2c1a7 -H "X-API-Key: $KEY"
+```
+
+```json
+{
+  "job_id": "e9b2c1a7",
+  "status": "done",
+  "report_path": "eval_report.html",
+  "hallucination_pass": 0,
+  "hallucination_total": 10,
+  "ragas_avg": {
+    "faithfulness": null,
+    "answer_relevancy": null,
+    "context_precision": null,
+    "context_recall": null
+  },
+  "error": null
+}
+```
+
+> **Примечание:** в `mock`-режиме RAGAS-метрики равны `null` (нет реального LLM для оценки). `hallucination_pass` показывает, сколько negative-кейсов модель корректно отклонила.
+
+### Prometheus метрики (без аутентификации)
+
+```bash
+curl $BASE/metrics
+# rag_requests_total{status="success"} 5
+# rag_latency_seconds_sum 1.532
+# ...
+```
+
+### Заголовки трассировки
+
+Каждый ответ содержит `X-Request-ID` — сквозной идентификатор запроса, который передаётся в OTel-спан. Можно передать свой:
+
+```bash
+curl -X POST $BASE/ask \
+     -H "X-API-Key: $KEY" \
+     -H "X-Request-ID: my-trace-42" \
+     -H "Content-Type: application/json" \
+     -d '{"question": "Python?", "collection": "default"}'
+# Ответ: X-Request-ID: my-trace-42
 ```
 
 ---
@@ -750,6 +1310,119 @@ PYTHONPATH=. .venv/bin/python -m pytest --cov=. --cov-report=html
 | Метрики | Prometheus + Grafana |
 | Конфигурация | pydantic-settings |
 | Тесты | pytest + pytest-asyncio + httpx |
+
+---
+
+## Как добавить новый LLM-провайдер
+
+Платформа строится на паттерне Ports & Adapters. Весь код приложения зависит только от `LLMProvider` ABC — добавить нового провайдера можно без изменения пайплайна или API.
+
+### 1. Реализовать адаптер (`llm/adapters.py`)
+
+```python
+from typing import AsyncGenerator
+from .llm_dataclasses import Message
+from .ports import LLMProvider
+
+
+class MyProvider(LLMProvider):
+    """Провайдер для MyLLM API."""
+
+    def __init__(self, model: str = "my-model", api_key: str | None = None) -> None:
+        import my_llm_sdk  # ленивый импорт — не падает при незаданном ключе
+
+        self.model = model
+        self.client = my_llm_sdk.AsyncClient(api_key=api_key)
+
+    async def complete(
+        self,
+        messages: list[Message],
+        stream: bool = False,
+    ) -> str | AsyncGenerator[str, None]:
+        payload = [{"role": m.role, "content": m.content} for m in messages]
+
+        if not stream:
+            response = await self.client.chat(model=self.model, messages=payload)
+            return response.text or ""
+
+        async def _stream() -> AsyncGenerator[str, None]:
+            async for chunk in await self.client.chat(
+                model=self.model, messages=payload, stream=True
+            ):
+                if chunk.delta:
+                    yield chunk.delta
+
+        return _stream()
+```
+
+**Обязательные требования:**
+- `self.model` — атрибут строкой (используется в Prometheus-метриках и OTel-спанах).
+- `complete()` возвращает `str` при `stream=False` и `AsyncGenerator[str, None]` при `stream=True`.
+- Нельзя возвращать `None` — используйте `""` как fallback для пустых ответов.
+
+### 2. Зарегистрировать в фабрике (`config.py`)
+
+```python
+def build_llm_provider(settings: Settings) -> LLMProvider:
+    match settings.llm_provider:
+        case "openai":
+            return OpenAIProvider(model=settings.llm_model, api_key=settings.openai_api_key)
+        case "anthropic":
+            return AnthropicProvider(model=settings.llm_model, api_key=settings.anthropic_api_key)
+        case "ollama":
+            return OllamaProvider(model=settings.llm_model, base_url=settings.ollama_base_url)
+        case "my_provider":                           # ← добавить
+            return MyProvider(model=settings.llm_model, api_key=settings.my_api_key)
+        case _:
+            raise ValueError(f"Unknown LLM provider: {settings.llm_provider!r}")
+```
+
+### 3. Добавить переменные окружения (`.env` / `config.py`)
+
+```bash
+# .env
+LLM_PROVIDER=my_provider
+LLM_MODEL=my-model-v1
+MY_API_KEY=key-...
+```
+
+В `config.py` в класс `Settings`:
+```python
+my_api_key: str | None = Field(default=None, alias="MY_API_KEY")
+```
+
+### 4. Написать тест
+
+```python
+import pytest
+from unittest.mock import MagicMock, AsyncMock
+from llm.llm_dataclasses import Message
+
+
+@pytest.mark.asyncio
+async def test_my_provider_complete_no_stream() -> None:
+    provider = MyProvider.__new__(MyProvider)
+    provider.model = "my-model"
+
+    mock_client = MagicMock()
+    mock_client.chat = AsyncMock(
+        return_value=MagicMock(text="Тестовый ответ")
+    )
+    provider.client = mock_client
+
+    result = await provider.complete([Message(role="user", content="Привет")])
+    assert result == "Тестовый ответ"
+    mock_client.chat.assert_awaited_once()
+```
+
+### Чеклист
+
+- [ ] `MyProvider` наследует `LLMProvider`, переопределяет `complete()`
+- [ ] `self.model` задан строкой (нужен для метрик)
+- [ ] Ленивый импорт SDK в `__init__` (не ломает старт без пакета)
+- [ ] Зарегистрирован в `build_llm_provider()` в `config.py`
+- [ ] `LLM_PROVIDER=my_provider` в `.env`
+- [ ] Юнит-тест с мок-клиентом написан
 
 ---
 
@@ -891,3 +1564,56 @@ EMBEDDING_DIMENSION=768
 | 4 | HybridVectorStore RRF: dense + BM25 через Qdrant Docker |
 | 5 | `reindex.py`: очистка + переиндексация с Ollama embeddings |
 | 6 | Полный RAG-пайплайн: ingest → hybrid search → `llama3.2` генерирует ответ |
+
+---
+
+## Chunking: стратегии и загрузчики
+
+> Подробная документация — в разделе [Модули → `chunking/`](#chunking-1).
+
+Краткая шпаргалка по выбору стратегии:
+
+| Ситуация | Рекомендация |
+|---|---|
+| Произвольный текст, нет структуры | `FixedSizeChunker` |
+| Markdown-документация с заголовками | `ByHeaderChunker` |
+| Длинные параграфы, нужна семантическая граница | `SemanticChunker` с `embed_fn` |
+| Нет embed-модели, нужна скорость | `SemanticChunker` без `embed_fn` (жадная разбивка) |
+
+---
+
+## Retrieval: переранжирование
+
+> Подробная документация — в разделе [Модули → `retrieval/`](#retrieval).
+
+Реранкеры применяются **после** vector search, **перед** построением промпта:
+
+```python
+# Пример использования CrossEncoderReranker вручную
+from retrieval.rerankers import CrossEncoderReranker
+
+reranker = CrossEncoderReranker("cross-encoder/ms-marco-MiniLM-L-6-v2")
+pipeline = RAGPipeline(..., reranker=reranker)
+```
+
+Для MMR выставляйте `lambda_` в зависимости от задачи:
+- `lambda_=1.0` — только релевантность (аналог обычного ранжирования)
+- `lambda_=0.5` — баланс релевантности и разнообразия (рекомендуется)
+- `lambda_=0.0` — максимальное разнообразие
+
+---
+
+## Коллекции API
+
+Управление коллекциями доступно через REST API:
+
+```bash
+# Список коллекций
+curl -H "X-API-Key: $API_SECRET_KEY" http://localhost:8080/v1/collections
+
+# Удалить коллекцию
+curl -X DELETE -H "X-API-Key: $API_SECRET_KEY" \
+     http://localhost:8080/v1/collections/bench_256
+```
+
+Оба endpoint работают с ChromaDB и Qdrant — бэкенд определяется переменной `VECTOR_STORE_BACKEND`.
