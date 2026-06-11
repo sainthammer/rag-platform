@@ -208,10 +208,12 @@ class QdrantDB(VectorDB):
         )
         hits = result.points
 
+        # Qdrant возвращает cosine similarity (выше = лучше).
+        # _distance_to_score ожидает дистанцию (ниже = лучше): dist = 1 - sim
         return SearchResult(
             ids=[str(h.id) for h in hits],
             documents=[(h.payload or {}).get("document", "") for h in hits],
-            distances=[h.score for h in hits],
+            distances=[1.0 - h.score for h in hits],
             metadatas=[
                 {k: v for k, v in (h.payload or {}).items() if k != "document"} for h in hits
             ],
@@ -406,10 +408,12 @@ class QdrantVectorStore(VectorDB):
         )
 
     def _hits_to_result(self, hits: list) -> SearchResult:
+        # Qdrant возвращает cosine similarity (выше = лучше).
+        # _distance_to_score ожидает дистанцию (ниже = лучше): dist = 1 - sim
         return SearchResult(
             ids=[str(h.id) for h in hits],
             documents=[(h.payload or {}).get("document", "") for h in hits],
-            distances=[h.score for h in hits],
+            distances=[1.0 - h.score for h in hits],
             metadatas=[
                 {k: v for k, v in (h.payload or {}).items() if k != "document"}
                 for h in hits

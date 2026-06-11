@@ -79,7 +79,8 @@ async def ask(
     При `stream=true` возвращает `text/event-stream` с токенами по мере генерации.
     При `stream=false` возвращает JSON `AskResponse`.
     """
-    if body.score_threshold != 0.0 or body.n_results != 5:
+    effective_threshold = body.score_threshold if body.score_threshold is not None else pipeline.score_threshold
+    if effective_threshold != pipeline.score_threshold or body.n_results != pipeline.n_results:
         from retrieval.pipeline import RAGPipeline as _P
         pipeline = _P(
             llm=pipeline.llm,
@@ -88,7 +89,7 @@ async def ask(
             template=pipeline.template,
             n_results=body.n_results,
             budget=pipeline.budget,
-            score_threshold=body.score_threshold,
+            score_threshold=effective_threshold,
             fallback_answer=pipeline.fallback_answer,
         )
 

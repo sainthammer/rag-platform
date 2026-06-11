@@ -89,7 +89,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     collection: str = "default"
     stream: bool = False
-    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     n_results: int = Field(default=5, ge=1, le=50)
 
 

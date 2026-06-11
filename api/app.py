@@ -13,6 +13,7 @@ from api.routers import ask, collections, eval, health, ingest, metrics, search
 from config import build_embedding_service, build_llm_provider, build_vector_db, settings
 from embeddings.ports import EmbeddingService
 from observability.tracing import instrument_fastapi
+from llm.prompt_templates import BASE
 from retrieval.pipeline import RAGPipeline
 
 logger = logging.getLogger("uvicorn.error")
@@ -111,6 +112,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         llm=llm,
         vector_db_factory=lambda name: build_vector_db(settings, collection=name),
         embed_fn=embed_service.embed,
+        template=BASE,
+        score_threshold=0.75,
     )
 
     app.state.llm = llm
