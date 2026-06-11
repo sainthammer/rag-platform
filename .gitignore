@@ -55,6 +55,11 @@ qdrant_storage/
 # Evaluation reports
 evaluation/reports/*.html
 evaluation/reports/*.json
+eval_report.html
+results/
+
+# ChromaDB local data
+chroma_data/
 
 # Observability
 grafana/data/
