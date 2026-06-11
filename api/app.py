@@ -18,8 +18,18 @@ from retrieval.pipeline import RAGPipeline
 logger = logging.getLogger("uvicorn.error")
 
 
+_SEED_FILE_BATCH = 20  # файлов чанкается параллельно за один раз
+
+
 async def _seed_docs_task(embed_service: EmbeddingService, collection: str, docs_dir: str = "docs") -> None:
-    """Загрузить все .md из docs/ в коллекцию, если она пустая."""
+    """Загрузить все .md из docs/ в коллекцию, если она пустая.
+
+    Алгоритм:
+      1. Чанкаем _SEED_FILE_BATCH файлов параллельно (asyncio.gather + to_thread).
+      2. Собираем все тексты батча в один список → один вызов embed_batch.
+         Для sentence-transformers одна большая матрица быстрее N маленьких.
+      3. Один вызов db.add на весь батч.
+    """
     from chunking import ingest as chunking_ingest
 
     docs_path = Path(docs_dir)
@@ -35,25 +45,57 @@ async def _seed_docs_task(embed_service: EmbeddingService, collection: str, docs
     if not md_files:
         return
 
-    logger.info("Seed: индексируем %d .md файлов → коллекция %r", len(md_files), collection)
-    total = 0
-    for path in md_files:
-        try:
-            chunks = await asyncio.to_thread(chunking_ingest, path, strategy="by_header")
-            if not chunks:
-                continue
-            texts = [c.text for c in chunks]
-            embeddings = await asyncio.to_thread(embed_service.embed_batch, texts)
-            rel = path.relative_to(docs_path).as_posix()
-            ids = [f"{rel}_chunk{i}" for i in range(len(chunks))]
-            metadatas = [c.metadata for c in chunks]
-            await asyncio.to_thread(db.add, ids, embeddings, texts, metadatas)
-            total += len(chunks)
-            logger.info("Seed: %s → %d чанков", path.name, len(chunks))
-        except Exception as exc:
-            logger.warning("Seed: не удалось индексировать %s: %s", path.name, exc)
+    total_batches = (len(md_files) + _SEED_FILE_BATCH - 1) // _SEED_FILE_BATCH
+    logger.info(
+        "Seed: %d файлов, батчи по %d → %d итераций",
+        len(md_files), _SEED_FILE_BATCH, total_batches,
+    )
 
-    logger.info("Seed: готово — %d чанков из %d файлов", total, len(md_files))
+    total_chunks = 0
+    for batch_idx in range(0, len(md_files), _SEED_FILE_BATCH):
+        batch_paths = md_files[batch_idx : batch_idx + _SEED_FILE_BATCH]
+
+        # Шаг 1 — параллельный чанкинг N файлов
+        results = await asyncio.gather(
+            *[asyncio.to_thread(chunking_ingest, p, strategy="by_header") for p in batch_paths],
+            return_exceptions=True,
+        )
+
+        # Шаг 2 — собираем все чанки батча в плоские списки
+        all_texts: list[str] = []
+        all_ids: list[str] = []
+        all_metas: list[dict] = []
+        for path, result in zip(batch_paths, results):
+            if isinstance(result, Exception):
+                logger.warning("Seed: ошибка при чанкинге %s: %s", path.name, result)
+                continue
+            if not result:
+                continue
+            rel = path.relative_to(docs_path).as_posix()
+            for idx, chunk in enumerate(result):
+                all_texts.append(chunk.text)
+                all_ids.append(f"{rel}_chunk{idx}")
+                all_metas.append(chunk.metadata)
+
+        if not all_texts:
+            continue
+
+        # Шаг 3 — один большой embed_batch на весь батч файлов
+        try:
+            embeddings = await asyncio.to_thread(embed_service.embed_batch, all_texts)
+        except Exception as exc:
+            logger.warning("Seed: ошибка embed_batch в батче %d: %s", batch_idx // _SEED_FILE_BATCH + 1, exc)
+            continue
+
+        # Шаг 4 — один db.add на весь батч
+        await asyncio.to_thread(db.add, all_ids, embeddings, all_texts, all_metas)
+        total_chunks += len(all_texts)
+        logger.info(
+            "Seed: батч %d/%d — %d чанков (итого %d)",
+            batch_idx // _SEED_FILE_BATCH + 1, total_batches, len(all_texts), total_chunks,
+        )
+
+    logger.info("Seed: готово — %d чанков из %d файлов", total_chunks, len(md_files))
 
 
 @asynccontextmanager
