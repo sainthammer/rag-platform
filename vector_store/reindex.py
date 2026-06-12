@@ -20,6 +20,8 @@ from vector_store.utils import to_uuid
 
 try:
     from tqdm.auto import tqdm
+
+    tqdm_installed = True
 except ImportError:
     tqdm_installed = None
 
