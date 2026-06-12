@@ -17,13 +17,6 @@ from vector_store.reindex import reindex
 from vector_store.store_dataclasses import MetadataFilter, SearchResult
 from vector_store.utils import reciprocal_rank_fusion
 
-# ----------------- Тестовые данные -----------------
-#
-# Три "документа" про животных. Эмбеддинги 4-мерные, придуманы вручную так,
-# чтобы было видно геометрию:
-#   - вектор запроса QUERY_VEC почти совпадает с вектором "cat"
-#   - значит во всех примерах поиска ожидаем top-1 = "cat"
-
 IDS = ["cat", "dog", "bird"]
 
 DOCS = ["Кошка мяукает", "Собака лает", "Птица поёт"]
@@ -58,7 +51,7 @@ METAS = [
     },
 ]
 
-QUERY_VEC = [0.15, 0.25, 0.35, 0.45]  # почти "cat"
+QUERY_VEC = [0.15, 0.25, 0.35, 0.45]
 
 
 # ----------------- Помощники для вывода -----------------
@@ -166,8 +159,8 @@ def example_rrf() -> None:
     header("Reciprocal Rank Fusion (RRF)")
 
     step("документ 'b' стоит первым в обоих списках -> должен победить")
-    dense_ranking = ["b", "a", "c"]  # как будто результат dense-поиска
-    sparse_ranking = ["b", "a", "d"]  # как будто результат sparse-поиска
+    dense_ranking = ["b", "a", "c"]
+    sparse_ranking = ["b", "a", "d"]
     fused = reciprocal_rank_fusion([dense_ranking, sparse_ranking])
     print(f"    вход:  dense={dense_ranking}, sparse={sparse_ranking}")
     print(f"    выход: {fused}")
@@ -206,7 +199,7 @@ def example_hybrid_search() -> None:
         "питон это язык программирования",
         "qdrant хранит векторы",
     ]
-    # ортогональные вектора: каждый документ "смотрит" в свою сторону
+
     embeddings = [
         [1.0, 0, 0, 0, 0, 0, 0, 0],
         [0, 1.0, 0, 0, 0, 0, 0, 0],
@@ -274,7 +267,7 @@ def example_reindex() -> None:
     step("цель: новая коллекция в Qdrant со sparse-индексом")
     target = QdrantDB(
         collection="docs_v2",
-        vector_size=model.get_sentence_embedding_dimension(),
+        vector_size=model.get_embedding_dimension(),
         in_memory=True,
         use_sparse=True,
     )
