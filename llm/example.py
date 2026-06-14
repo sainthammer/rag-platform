@@ -99,9 +99,9 @@ _EMBEDDINGS = [
 
 def _build_vector_db():
     """Создать in-memory Qdrant с тестовыми данными."""
-    from vector_store.adapters import QdrantDB
+    from vector_store.adapters import QdrantVectorStore
 
-    db = QdrantDB("demo", vector_size=5, in_memory=True)
+    db = QdrantVectorStore("demo", vector_size=5, in_memory=True)
     db.add(
         ids=[str(i) for i in range(len(_DOCS))],
         embeddings=_EMBEDDINGS,
@@ -121,7 +121,7 @@ def _fake_embed(text: str) -> list[float]:
 
 async def demo_rag_pipeline():
     """Запустить полный RAG-цикл со всеми шаблонами промптов."""
-    from llm.pipeline import RAGPipeline
+    from retrieval.pipeline import RAGPipeline
     from llm.prompt_templates import get_template
     from llm.token_budget import TokenBudgetManager
 
@@ -137,15 +137,15 @@ async def demo_rag_pipeline():
         print(f"─── RAGPipeline | шаблон={template_name!r} ───")
         pipeline = RAGPipeline(
             llm=provider,
-            vector_db=db,
+            vector_db_factory=lambda _: db,
             embed_fn=_fake_embed,
             template=get_template(template_name),
             n_results=3,
             budget=budget,
         )
-        result = await pipeline.run(query)
+        result = await pipeline.ask(query, "demo")
         print(f"В: {query}")
-        print(f"О: {result}\n")
+        print(f"О: {result.answer}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -154,20 +154,20 @@ async def demo_rag_pipeline():
 
 async def demo_rag_stream():
     """Показать стриминг ответа из RAGPipeline."""
-    from llm.pipeline import RAGPipeline
+    from retrieval.pipeline import RAGPipeline
 
+    db = _build_vector_db()
     query = "Объясни, что такое векторные базы данных и зачем они нужны."
-    print(f"─── RAGPipeline | stream=True ───")
+    print(f"─── RAGPipeline | ask_stream ───")
     print(f"В: {query}")
     pipeline = RAGPipeline(
         llm=_build_provider(),
-        vector_db=_build_vector_db(),
+        vector_db_factory=lambda _: db,
         embed_fn=_fake_embed,
         n_results=2,
     )
     print("О: ", end="", flush=True)
-    gen = await pipeline.run(query, stream=True)
-    async for chunk in gen:  # type: ignore[union-attr]
+    async for chunk in pipeline.ask_stream(query, "demo"):
         print(chunk, end="", flush=True)
     print("\n")
 

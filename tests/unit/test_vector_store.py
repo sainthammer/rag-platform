@@ -11,7 +11,7 @@ import random
 
 import pytest
 
-from vector_store.adapters import ChromaDB, HybridVectorStore, QdrantDB, QdrantVectorStore, _rrf
+from vector_store.adapters import ChromaDB, HybridVectorStore, QdrantVectorStore, _rrf
 from vector_store.store_dataclasses import CollectionStats, SearchResult
 
 # ---------------------------------------------------------------------------
@@ -154,75 +154,6 @@ class TestChromaDB:
     def test_get_stats_empty(self, db):
         stats = db.get_stats()
         assert stats.vectors_count == 0
-
-
-# ---------------------------------------------------------------------------
-# QdrantDB
-# ---------------------------------------------------------------------------
-
-
-class TestQdrantDB:
-    @pytest.fixture
-    def db(self):
-        return QdrantDB("test_col", vector_size=VECTOR_SIZE, in_memory=True)
-
-    def test_add_and_count(self, db):
-        vecs = _vecs(3)
-        db.add(["a", "b", "c"], vecs, ["doc a", "doc b", "doc c"])
-        assert db.count() == 3
-
-    def test_count_empty(self, db):
-        assert db.count() == 0
-
-    def test_search_returns_search_result(self, db):
-        vecs = _vecs(3)
-        db.add(["a", "b", "c"], vecs, ["doc a", "doc b", "doc c"])
-        result = db.search(vecs[0], n_results=2)
-        assert isinstance(result, SearchResult)
-        assert len(result.ids) == 2
-        assert len(result.documents) == 2
-
-    def test_search_top_result_matches_query(self, db):
-        vecs = _vecs(3)
-        db.add(["a", "b", "c"], vecs, ["doc a", "doc b", "doc c"])
-        result = db.search(vecs[2], n_results=1)
-        assert result.documents[0] == "doc c"
-
-    def test_delete_reduces_count(self, db):
-        vecs = _vecs(3)
-        db.add(["a", "b", "c"], vecs, ["doc a", "doc b", "doc c"])
-        db.delete(["a"])
-        assert db.count() == 2
-
-    def test_add_with_metadatas(self, db):
-        vecs = _vecs(2)
-        db.add(["a", "b"], vecs, ["doc a", "doc b"], [{"src": "f1"}, {"src": "f2"}])
-        result = db.search(vecs[0], n_results=1)
-        assert result.metadatas[0].get("src") == "f1"
-
-    def test_upsert_idempotent(self, db):
-        vecs = _vecs(1)
-        db.add(["a"], vecs, ["doc a"])
-        db.add(["a"], vecs, ["doc a updated"])
-        assert db.count() == 1
-
-    def test_get_stats(self, db):
-        vecs = _vecs(3)
-        db.add(["a", "b", "c"], vecs, ["doc a", "doc b", "doc c"])
-        stats = db.get_stats()
-        assert isinstance(stats, CollectionStats)
-        assert stats.vectors_count == 3
-        assert stats.collection == "test_col"
-
-    def test_get_stats_empty(self, db):
-        stats = db.get_stats()
-        assert stats.vectors_count == 0
-
-    def test_search_n_results_capped_by_collection_size(self, db):
-        vecs = _vecs(2)
-        db.add(["a", "b"], vecs, ["doc a", "doc b"])
-        result = db.search(vecs[0], n_results=10)
-        assert len(result.ids) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -221,7 +221,7 @@ async def test_mock_llm_model_attribute() -> None:
 
 
 def test_build_mock_pipeline_creates_pipeline() -> None:
-    from llm.pipeline import RAGPipeline
+    from retrieval.pipeline import RAGPipeline
     pipeline = _build_mock_pipeline()
     assert isinstance(pipeline, RAGPipeline)
 

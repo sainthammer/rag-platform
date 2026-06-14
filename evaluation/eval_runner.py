@@ -62,7 +62,7 @@ warnings.filterwarnings(
 from evaluation.testcase import TestCase
 from evaluation.testcases_dataset import get_testcases
 from evaluation.ragas_eval import as_hf_dataset, evaluate_ragas
-from llm.pipeline import RAGPipeline
+from retrieval.pipeline import RAGPipeline
 from llm.ports import LLMProvider
 from llm.llm_dataclasses import Message
 from llm.prompt_templates import STRICT
@@ -170,7 +170,7 @@ def _build_mock_pipeline() -> RAGPipeline:
     """
     return RAGPipeline(
         llm=_MockLLMProvider(),
-        vector_db=_MockVectorDB(),
+        vector_db_factory=lambda _: _MockVectorDB(),
         embed_fn=_mock_embed_fn,
         template=STRICT,
         n_results=3,
@@ -212,7 +212,7 @@ def _build_ollama_pipeline() -> RAGPipeline:
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     return RAGPipeline(
         llm=OllamaProvider(model=llm_model, base_url=ollama_url),
-        vector_db=_MockVectorDB(),
+        vector_db_factory=lambda _: _MockVectorDB(),
         embed_fn=_embed_fn,
         template=STRICT,
         n_results=3,
@@ -331,7 +331,9 @@ async def run_evaluation(
         print(f"  [{i:2d}/{len(testcases)}] {tc.category:10} │ {tc.question[:55]}…")
         t0 = time.perf_counter()
         try:
-            answer, contexts = await pipeline.run_detailed(tc.question)
+            response = await pipeline.ask(tc.question, "eval")
+            answer = response.answer
+            contexts = [s.text for s in response.sources]
             latency_ms = round((time.perf_counter() - t0) * 1000)
             print(f"             └─ OK  {latency_ms:4d}ms │ {len(contexts)} чанков")
         except Exception as exc:
