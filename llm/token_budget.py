@@ -54,8 +54,9 @@ class TokenBudgetManager:
             # Пытаемся взять точный энкодер для модели — он учитывает
             # специфику BPE токенизатора (cl100k_base, o200k_base и т.д.).
             self._enc = tiktoken.encoding_for_model(model)
-        except KeyError:
-            # Для Ollama-моделей и любых неизвестных — универсальный энкодер.
+        except Exception:
+            # Для Ollama-моделей, неизвестных имён и сетевых ошибок при
+            # скачивании tiktoken-файла — универсальный энкодер.
             self._enc = tiktoken.get_encoding("cl100k_base")
 
         # Определяем размер окна: явный аргумент → таблица → запасной вариант.

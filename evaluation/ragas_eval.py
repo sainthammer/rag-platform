@@ -110,7 +110,7 @@ def evaluate_ragas(
     """
 
     try:
-        from ragas import evaluate
+        from ragas import RunConfig, evaluate
         from ragas.dataset_schema import EvaluationDataset, SingleTurnSample
         from ragas.metrics import (
             ContextPrecision,
@@ -144,5 +144,6 @@ def evaluate_ragas(
     return evaluate(
         dataset=ragas_dataset,
         metrics=[Faithfulness(), ResponseRelevancy(), ContextPrecision(), ContextRecall()],
+        run_config=RunConfig(timeout=600, max_workers=1),
         **kwargs,
     )

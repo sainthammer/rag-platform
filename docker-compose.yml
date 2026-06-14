@@ -14,9 +14,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
     depends_on:
       chroma:
-        condition: service_healthy
+        condition: service_started
       qdrant:
-        condition: service_healthy
+        condition: service_started
       jaeger:
         condition: service_started
       ollama:
@@ -26,11 +26,11 @@ services:
       - ${USERPROFILE:-~}/.cache/huggingface:/root/.cache/huggingface
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/v1/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
   # ── ChromaDB ────────────────────────────────────────────────────────────────
   chroma:
@@ -40,11 +40,6 @@ services:
       - "8000:8000"
     volumes:
       - chroma_data:/chroma/chroma
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
 
   # ── Qdrant ──────────────────────────────────────────────────────────────────
   qdrant:
@@ -54,11 +49,6 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
 
   # ── Ollama (локальный LLM + embeddings) ─────────────────────────────────────
   ollama:

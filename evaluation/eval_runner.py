@@ -177,14 +177,19 @@ def _build_mock_pipeline() -> RAGPipeline:
     )
 
 
+def _ollama_base_url() -> str:
+    """Вернуть базовый URL Ollama без /v1 суффикса (нужен для langchain_ollama)."""
+    url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    return url.rstrip("/").removesuffix("/v1")
+
+
 def _build_ollama_pipeline() -> RAGPipeline:
     """Собрать pipeline с реальным Ollama LLM и embeddings + mock VectorDB.
 
-    Требует запущенного ``ollama serve``. Для embeddings нужна модель
-    ``nomic-embed-text``, для LLM — ``llama3.2`` (или настроенная в .env).
-
-    MockVectorDB используется намеренно, чтобы runner работал без реальных
-    данных в ChromaDB/Qdrant. Чанки — фиктивные Python-документы.
+    URL и модели читаются из переменных окружения:
+      OLLAMA_BASE_URL — адрес Ollama (default: http://localhost:11434/v1)
+      LLM_MODEL       — модель LLM (default: llama3.2)
+      EMBED_MODEL     — модель embeddings (default: LLM_MODEL)
     """
     try:
         from langchain_ollama import OllamaEmbeddings
@@ -195,13 +200,18 @@ def _build_ollama_pipeline() -> RAGPipeline:
 
     from llm.adapters import OllamaProvider
 
-    embed_model = OllamaEmbeddings(model="nomic-embed-text")
+    base_url = _ollama_base_url()
+    llm_model = os.getenv("LLM_MODEL", "llama3.2")
+    embed_model_name = os.getenv("EMBED_MODEL", llm_model)
+
+    embed_model = OllamaEmbeddings(model=embed_model_name, base_url=base_url)
 
     def _embed_fn(text: str) -> list[float]:
         return embed_model.embed_query(text)
 
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     return RAGPipeline(
-        llm=OllamaProvider(model="llama3.2"),
+        llm=OllamaProvider(model=llm_model, base_url=ollama_url),
         vector_db=_MockVectorDB(),
         embed_fn=_embed_fn,
         template=STRICT,
@@ -212,14 +222,23 @@ def _build_ollama_pipeline() -> RAGPipeline:
 def _build_ollama_ragas():
     """Собрать LLM и embeddings для RAGAS в Ollama-режиме.
 
-    Возвращает кортеж (ragas_llm, ragas_embeddings).
+    URL и модели читаются из переменных окружения:
+      OLLAMA_BASE_URL — адрес Ollama
+      LLM_MODEL       — модель для RAGAS LLM (default: llama3.2)
+      EMBED_MODEL     — модель для RAGAS embeddings (default: LLM_MODEL)
     """
     from langchain_ollama import ChatOllama, OllamaEmbeddings
-    from ragas.llms import LangchainLLMWrapper
     from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.llms import LangchainLLMWrapper
 
-    llm = LangchainLLMWrapper(ChatOllama(model="mistral:7b"))
-    embeddings = LangchainEmbeddingsWrapper(OllamaEmbeddings(model="nomic-embed-text"))
+    base_url = _ollama_base_url()
+    llm_model = os.getenv("LLM_MODEL", "llama3.2")
+    embed_model_name = os.getenv("EMBED_MODEL", llm_model)
+
+    llm = LangchainLLMWrapper(ChatOllama(model=llm_model, base_url=base_url))
+    embeddings = LangchainEmbeddingsWrapper(
+        OllamaEmbeddings(model=embed_model_name, base_url=base_url)
+    )
     return llm, embeddings
 
 
