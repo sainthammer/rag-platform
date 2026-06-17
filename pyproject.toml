@@ -24,6 +24,8 @@ dependencies = [
 
     # Document processing
     "langchain-text-splitters>=0.2.0",
+    "beautifulsoup4>=4.12.0",
+    "pdfminer.six>=20231228",
     "pypdf>=4.2.0",
     "python-docx>=1.1.0",
 
