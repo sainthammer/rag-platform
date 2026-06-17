@@ -24,6 +24,8 @@ tests/
 
 Подробная документация по модулю LLM: [`llm/README.md`](llm/README.md)
 
+Документация по модулю Embeddings: [`embeddings/README.md`](embeddings/README.md)
+
 Документация по оценке (RAGAS): [`evaluation/README.md`](evaluation/README.md)
 
 Документация по трейсингу (OpenTelemetry): [`observability/README.md`](observability/README.md)
@@ -64,6 +66,26 @@ cp .env.example .env
 
 Все настройки задаются через переменные окружения или файл `.env`.
 Полный список параметров см. в `.env.example` и `config.py`.
+
+### Embeddings
+
+Модуль `embeddings/` отвечает за построение embedding-векторов и
+L2-нормализацию. Для пользовательских запросов доступен SQLite-кэш; embedding-и
+чанков документов должны сохраняться в vector store, без дублирования в
+SQLite-кэше. Провайдер выбирается через `.env`:
+
+```bash
+EMBEDDING_PROVIDER=sentence-transformers
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_DIMENSION=1024
+EMBEDDING_NORMALIZE=true
+EMBEDDING_CACHE_ENABLED=true
+EMBEDDING_CACHE_PATH=.cache/embeddings.sqlite3
+```
+
+Доступные провайдеры:
+- `openai` — OpenAI Embeddings API;
+- `sentence-transformers` — локальная модель через `sentence-transformers`.
 
 ### Evaluation (RAGAS)
 
@@ -173,6 +195,61 @@ PYTHONPATH=. .venv/bin/python vector_store/example.py
 ```
 
 Демонстрирует `add`, `search`, `delete`, `count` на ChromaDB и Qdrant in-memory.
+
+### Smoke-тест embeddings
+
+Проверка `EmbeddingService`, нормализации, batch-вызова и разделения сервисов:
+query embeddings идут через SQLite-кэш, document chunk embeddings — без
+SQLite-кэша. По умолчанию используется `fake`-провайдер без внешних сервисов:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m embeddings.example
+```
+
+Доступные режимы:
+
+```bash
+# Детерминированный fake-провайдер, сеть и API-ключи не нужны
+PYTHONPATH=. .venv/bin/python -m embeddings.example fake
+
+# OpenAI Embeddings API, нужен OPENAI_API_KEY
+PYTHONPATH=. .venv/bin/python -m embeddings.example openai
+
+# Локальная/скачиваемая модель SentenceTransformers, например BAAI/bge-m3
+PYTHONPATH=. .venv/bin/python -m embeddings.example sentence-transformers
+```
+
+Если SentenceTransformers-модель уже скачана, но HuggingFace недоступен:
+
+```bash
+HF_HUB_OFFLINE=1 PYTHONPATH=. .venv/bin/python -m embeddings.example sentence-transformers
+```
+
+Пример выводит диагностические значения embedding-модуля:
+- размерность query- и document-векторов;
+- L2-норму query-вектора;
+- первые 8 координат query-вектора;
+- cosine similarity между query и чанками;
+- вызовы fake-сервисов для проверки cache hit и document path без кэша.
+
+Unit-тесты модуля embeddings:
+
+```bash
+# Все unit-тесты embeddings
+PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_embeddings.py tests/unit/test_embedding_cache.py -q
+
+# Только базовый контракт EmbeddingService: dimension, normalize, batch
+PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_embeddings.py -q
+
+# Только SQLite-кэш: key, roundtrip, cache hit, missing-only batch
+PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_embedding_cache.py -q
+```
+
+Проверка стиля и статических правил для embeddings:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m ruff check embeddings tests/unit/test_embeddings.py tests/unit/test_embedding_cache.py
+```
 
 ### Запуск через Docker
 
