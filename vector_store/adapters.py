@@ -2,10 +2,9 @@
 Реализации интерфейсов для базового взаимодействия с векторными БД.
 """
 
-from vector_store.store_dataclasses import SearchResult
-from vector_store.utils import to_uuid
-
-from .ports import VectorDB
+from vector_store.ports import VectorDB
+from vector_store.store_dataclasses import SearchResult, combine_filters
+from vector_store.utils import reciprocal_rank_fusion, to_uuid
 
 # ----------------- ChromaDB -----------------
 
@@ -56,7 +55,7 @@ class ChromaDB(VectorDB):
             metadatas=metadatas,
         )
 
-    def search(self, query_embedding, n_results=3) -> SearchResult:
+    def search(self, query_embedding, n_results=3, filters=None) -> SearchResult:
         """
         Функция поиска по коллекции
 
@@ -68,6 +67,7 @@ class ChromaDB(VectorDB):
         raw = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
+            where=combine_filters(filters) if filters else None,
             include=["documents", "metadatas", "distances"],
         )
         return SearchResult(
@@ -92,6 +92,15 @@ class ChromaDB(VectorDB):
         """
         return self.collection.count()
 
+    def clear(self) -> None:
+        """
+        Очистить коллеуцеию
+        """
+
+        name = self.collection.name
+        self.client.delete_collection(name)
+        self.collection = self.client.get_or_create_collection(name)
+
 
 # ----------------- Qdrant -----------------
 
@@ -106,6 +115,7 @@ class QdrantDB(VectorDB):
         host: имя хоста, где задеплоена БД
         port: порт, по которому доступна БД на хосте
         in_memory: флаг, который позволяет запустить БД в ОП
+        use_sparce: флаг, который бавляет sparce индекс
     """
 
     def __init__(
@@ -115,9 +125,10 @@ class QdrantDB(VectorDB):
         host: str = "localhost",
         port: int = 6333,
         in_memory: bool = False,
+        use_sparse: bool = False,
     ) -> None:
         from qdrant_client import QdrantClient
-        from qdrant_client.http.models import Distance, VectorParams
+        from qdrant_client.http.models import Distance, SparseVectorParams, VectorParams
 
         if in_memory:
             self.client = QdrantClient(":memory:")
@@ -125,6 +136,13 @@ class QdrantDB(VectorDB):
             self.client = QdrantClient(host=host, port=port)
 
         self.collection = collection
+        self.use_sparse = use_sparse
+        self.sparse_model = None
+
+        if use_sparse:
+            from fastembed import SparseTextEmbedding
+
+            self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
 
         existing_collections = [
             collection.name for collection in self.client.get_collections().collections
@@ -133,40 +151,50 @@ class QdrantDB(VectorDB):
         if collection not in existing_collections:
             self.client.create_collection(
                 collection_name=collection,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                vectors_config={"dense": VectorParams(size=vector_size, distance=Distance.COSINE)},
+                sparse_vectors_config={"sparse": SparseVectorParams()} if use_sparse else None,
             )
 
     def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
-        """
-        Добавление записей в коллекцию.
-        Все передаваемые списки должны быть одинаковой длинны, иначе обрежет на самом коротком
+        from qdrant_client.models import PointStruct, SparseVector
 
-        args:
-            ids: список идентификаторов файлов ??? пока хз, надо обсудить формат передаваемых данных
-            emdeddings: список эмбеддингов, соответсвующих документам
-            documents: список самих документов
-            metadatas: список словарей с метаданными для документов(теги и тп)
+        documents = [(doc if doc else "") for doc in (documents or [""] * len(ids))]
+        metadatas = metadatas or [{}] * len(ids)
 
-        """
-        from qdrant_client.models import PointStruct
+        sparse_vecs = [None] * len(ids)
+        if self.use_sparse and self.sparse_model is not None:
+            sparse_vecs = list(self.sparse_model.embed(documents))
 
-        points = [
-            PointStruct(
-                id=to_uuid(id),
-                vector=vec,
-                payload={"document": doc or "", **(meta or {})},
+        points = []
+        for id, vec, doc, meta, sp in zip(ids, embeddings, documents, metadatas, sparse_vecs):
+            vector = {"dense": vec}
+            if self.use_sparse and sp is not None:
+                vector["sparse"] = SparseVector(
+                    indices=sp.indices.tolist(),
+                    values=sp.values.tolist(),
+                )
+            points.append(
+                PointStruct(
+                    id=to_uuid(id),
+                    vector=vector,
+                    payload={"document": doc, **(meta or {})},
+                )
             )
-            for id, vec, doc, meta in zip(
-                ids,
-                embeddings,
-                documents or [""] * len(ids),
-                metadatas or [{}] * len(ids),
-            )
-        ]
 
         BATCH_SIZE = 100
         for i in range(0, len(points), BATCH_SIZE):
             self.client.upsert(collection_name=self.collection, points=points[i : i + BATCH_SIZE])
+
+    def _to_search_result(self, hits) -> SearchResult:
+        """Общий сборщик SearchResult из точек Qdrant"""
+        return SearchResult(
+            ids=[str(h.id) for h in hits],
+            documents=[(h.payload or {}).get("document", "") for h in hits],
+            distances=[h.score for h in hits],
+            metadatas=[
+                {k: v for k, v in (h.payload or {}).items() if k != "document"} for h in hits
+            ],
+        )
 
     def search(self, query_embedding, n_results=3) -> SearchResult:
         """
@@ -180,19 +208,34 @@ class QdrantDB(VectorDB):
         result = self.client.query_points(
             collection_name=self.collection,
             query=query_embedding,
+            using="dense",
             limit=n_results,
             with_payload=True,
         )
         hits = result.points
 
-        return SearchResult(
-            ids=[str(h.id) for h in hits],
-            documents=[(h.payload or {}).get("document", "") for h in hits],
-            distances=[h.score for h in hits],
-            metadatas=[
-                {k: v for k, v in (h.payload or {}).items() if k != "document"} for h in hits
-            ],
+        return self._to_search_result(hits=hits)
+
+    def sparse_search(self, query_text, n_results=3) -> SearchResult:
+        """sparse search foo"""
+        from qdrant_client.models import SparseVector
+
+        if self.sparse_model is None:
+            raise ValueError("sparse_search недоступен: создайте QdrantDB с use_sparse=True")
+
+        emb = list(self.sparse_model.query_embed(query_text))[0]
+        result = self.client.query_points(
+            collection_name=self.collection,
+            query=SparseVector(
+                indices=emb.indices.tolist(),
+                values=emb.values.tolist(),
+            ),
+            using="sparse",
+            limit=n_results,
+            with_payload=True,
         )
+
+        return self._to_search_result(result.points)
 
     def delete(self, ids) -> None:
         """
@@ -213,3 +256,73 @@ class QdrantDB(VectorDB):
         Возвращает количество записей в коллекции
         """
         return self.client.count(collection_name=self.collection).count
+
+    def clear(self) -> None:
+        """
+        Удалить все точки, при этом оставив коллекцию
+        """
+        from qdrant_client.http.models import Filter, FilterSelector
+
+        self.client.delete(
+            collection_name=self.collection, points_selector=FilterSelector(filter=Filter())
+        )
+
+
+class HybridVectorStore(VectorDB):
+    """
+    Гибридный поиск
+
+    Оборачивает QdrantDB с включённым sparse-индексом.
+    add/delete/count делегируются обёрнутому стору.
+
+    args:
+        store: QdrantDB, созданный с use_sparse=True
+        k: константа RRF
+    """
+
+    def __init__(self, store: QdrantDB, k: int = 60) -> None:
+        if not store.use_sparse:
+            raise ValueError("Store must be created with use_sparce=True")
+
+        self.store = store
+        self.k = k
+
+    def add(self, ids, embeddings, documents=None, metadatas=None) -> None:
+        self.store.add(ids, embeddings, documents, metadatas)
+
+    def search(self, query_embedding, n_results=3, query_text=None) -> SearchResult:
+        """
+        Функция гибридного поиска. Нужен эмбединг и текст для посика
+        В distances кладётся RRF-score (больше = лучше)
+        """
+
+        if query_text is None:
+            raise ValueError("Hybrid search needed query_text for search")
+
+        fetch_k = n_results * 4
+
+        dense = self.store.search(query_embedding=query_embedding, n_results=n_results)
+        sparse = self.store.sparse_search(query_text=query_text, n_results=fetch_k)
+
+        fused = reciprocal_rank_fusion([dense.ids, sparse.ids], k=self.k)
+
+        lookup = {}
+
+        for res in (dense, sparse):
+            for i, doc_id in enumerate(res.ids):
+                lookup.setdefault(doc_id, (res.documents[i], res.metadatas[i]))
+
+        top = fused[:n_results]
+
+        return SearchResult(
+            ids=[doc_id for doc_id, _ in top],
+            documents=[lookup[doc_id][0] for doc_id, _ in top],
+            distances=[score for _, score in top],
+            metadatas=[lookup[doc_id][1] for doc_id, _ in top],
+        )
+
+    def delete(self, ids) -> None:
+        self.store.delete(ids)
+
+    def count(self) -> int:
+        return self.store.count()
